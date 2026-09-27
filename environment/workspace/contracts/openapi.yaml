@@ -1,0 +1,136 @@
+openapi: 3.0.3
+info:
+  title: BeaconFare Quote API
+  version: "3"
+  description: >
+    Prices freight lanes and stores issued quotes. Every response carries
+    X-BeaconFare-Version, X-BeaconFare-Color and X-BeaconFare-Task headers.
+    Pricing rule of every correct release, in cents:
+    1500 + 700 * band + 35 * ceil(weight_kg * 10), where band is
+    (sum of the character codes of origin + destination) mod 5, plus 1.
+paths:
+  /health/live:
+    get:
+      summary: Process liveness.
+      responses:
+        "200": {description: The process is up.}
+  /health/ready:
+    get:
+      summary: Readiness. 200 when the quotes table is ACTIVE, 503 otherwise.
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Identity"}
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /release:
+    get:
+      summary: Which release, color and task answered.
+      responses:
+        "200":
+          description: Identity of the answering task.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Identity"}
+  /release/selftest:
+    get:
+      summary: Release verification. Reference pricing plus a storage round trip.
+      responses:
+        "200":
+          description: Every reference case priced correctly and storage works.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SelfTest"}
+        "500":
+          description: At least one check failed. passed is false.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SelfTest"}
+  /quotes:
+    post:
+      summary: Price a lane and store the quote.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin, destination, weight_kg]
+              properties:
+                origin: {type: string, pattern: "^[A-Z]{3}$"}
+                destination: {type: string, pattern: "^[A-Z]{3}$"}
+                weight_kg: {type: number, exclusiveMinimum: true, minimum: 0, maximum: 20000}
+      responses:
+        "201":
+          description: Quote issued.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Quote"}
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /quotes/{quote_id}:
+    get:
+      summary: Read a stored quote.
+      parameters:
+        - {name: quote_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: The stored quote.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Quote"}
+        "404":
+          description: Unknown quote.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+components:
+  schemas:
+    Identity:
+      type: object
+      properties:
+        version: {type: string}
+        color: {type: string, enum: [blue, green]}
+        task: {type: string}
+    SelfTest:
+      type: object
+      required: [passed, version, color, task]
+      properties:
+        passed: {type: boolean}
+        version: {type: string}
+        color: {type: string}
+        task: {type: string}
+        cases: {type: integer}
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              case: {type: string}
+              expected: {type: integer}
+              got: {type: integer}
+        storage: {type: string}
+    Quote:
+      type: object
+      required: [quote_id, origin, destination, weight_kg, fare_cents, priced_by, created_at]
+      properties:
+        quote_id: {type: string, format: uuid}
+        origin: {type: string}
+        destination: {type: string}
+        weight_kg: {type: number}
+        fare_cents: {type: integer}
+        priced_by: {type: string, description: Release version that priced the quote.}
+        created_at: {type: string, format: date-time}
+    Error:
+      type: object
+      properties:
+        code: {type: string}
+        detail: {type: string}

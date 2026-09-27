@@ -1,0 +1,253 @@
+{
+  "schema_version": "1.1",
+  "benchmark": "BeaconFare Release Cutover",
+  "total_points": 100,
+  "pass_threshold": 100,
+  "categories": [
+    {
+      "id": "release_safety",
+      "label": "Verified promotion and defective-release rejection",
+      "weight": 32,
+      "obligations": [
+        "lifecycle.zero_downtime_promotion",
+        "lifecycle.defective_release_rejected"
+      ]
+    },
+    {
+      "id": "rollback_repair",
+      "label": "Instant rollback, repair and stable state",
+      "weight": 20,
+      "obligations": [
+        "lifecycle.instant_rollback",
+        "lifecycle.repair_without_disruption",
+        "lifecycle.reapply_stable"
+      ]
+    },
+    {
+      "id": "topology",
+      "label": "Blue/green topology",
+      "weight": 18,
+      "obligations": [
+        "declared.release_topology",
+        "realized.initial_release"
+      ]
+    },
+    {
+      "id": "product",
+      "label": "Product traffic",
+      "weight": 10,
+      "obligations": [
+        "observed.quotes_roundtrip"
+      ]
+    },
+    {
+      "id": "platform",
+      "label": "Managed platform and isolation",
+      "weight": 12,
+      "obligations": [
+        "declared.managed_iac",
+        "declared.identity_data_logs"
+      ]
+    },
+    {
+      "id": "teardown",
+      "label": "Destruction",
+      "weight": 8,
+      "obligations": [
+        "lifecycle.destroy_clean"
+      ]
+    }
+  ],
+  "planes": {
+    "declared": 20,
+    "realized": 10,
+    "observed": 10,
+    "lifecycle": 60
+  },
+  "hard_gates": [
+    "trial.integrity",
+    "declared.managed_iac",
+    "lifecycle.no_defective_traffic",
+    "lifecycle.baseline_preserved"
+  ],
+  "score_caps": {
+    "defective_release_served": 39,
+    "cleanup_leak": 79
+  },
+  "obligations": [
+    {
+      "id": "declared.managed_iac",
+      "plane": "declared",
+      "weight": 4,
+      "hard_gate": "declared.managed_iac",
+      "fidelity": "state",
+      "implementation": "executable",
+      "given": "a submission containing Terraform or OpenTofu infrastructure",
+      "when": "the verifier reads machine-readable state",
+      "then": [
+        "state parses and every scored resource family is managed",
+        "the load balancer, both listeners, both target groups, both color services and the quotes table named in the manifest are in state"
+      ],
+      "deadline_seconds": 120
+    },
+    {
+      "id": "declared.release_topology",
+      "plane": "declared",
+      "weight": 8,
+      "fidelity": "state",
+      "implementation": "executable",
+      "given": "the release-process, ALB and ECS contracts",
+      "when": "listeners, target groups, services and task definitions are read from state",
+      "then": [
+        "the production and preview listeners use the configured ports and each forwards to exactly one, different, color target group",
+        "both target groups are ip targets on 8080 with the /health/ready health check",
+        "each color service runs in private subnets without a public IP, behind its own target group on 8080",
+        "every task definition a color service uses selects a supplied image and sets DEPLOYMENT_COLOR to that color"
+      ],
+      "deadline_seconds": 60
+    },
+    {
+      "id": "declared.identity_data_logs",
+      "plane": "declared",
+      "weight": 8,
+      "fidelity": "state",
+      "implementation": "executable",
+      "given": "the IAM, DynamoDB and logging contracts",
+      "when": "roles, the quotes table and log groups are read from state",
+      "then": [
+        "the quotes table is keyed on quote_id (S), on-demand, with TTL on expires_at",
+        "the execution role only ships logs; the task role only uses the four quote actions on the quotes table",
+        "no policy grants a wildcard action or resource",
+        "task definitions log with awslogs to managed groups retained for exactly the configured days"
+      ],
+      "note": "Declaration only for IAM: this endpoint records policies without evaluating them.",
+      "deadline_seconds": 60
+    },
+    {
+      "id": "realized.initial_release",
+      "plane": "realized",
+      "weight": 10,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a completed first deploy",
+      "when": "listeners, target health, services and production responses are read live",
+      "then": [
+        "production forwards to one color and preview to the other",
+        "the live color has the configured number of healthy targets and running tasks; the standby color runs none",
+        "every production response comes from the initial release in the live color, from more than one task",
+        "the manifest records the initial outcome"
+      ],
+      "deadline_seconds": 180
+    },
+    {
+      "id": "observed.quotes_roundtrip",
+      "plane": "observed",
+      "weight": 10,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a ready deployment",
+      "when": "fresh quotes are issued and read back through production",
+      "then": [
+        "each quote is priced by the published rule and stored",
+        "each quote reads back with the same fare and the release that priced it",
+        "the quotes table holds the items"
+      ],
+      "deadline_seconds": 120
+    },
+    {
+      "id": "lifecycle.zero_downtime_promotion",
+      "plane": "lifecycle",
+      "weight": 16,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the initial release live under continuous production traffic",
+      "when": "deploy runs with a correct later release requested",
+      "then": [
+        "no production request fails while deploy runs and the release changes over exactly once",
+        "when deploy returns, production serves only the new release from the other color and preview serves the old release",
+        "the previously live tasks are still running, unchanged, as a warm standby",
+        "every quote written during the release reads back",
+        "the manifest records the promotion"
+      ],
+      "deadline_seconds": 900
+    },
+    {
+      "id": "lifecycle.instant_rollback",
+      "plane": "lifecycle",
+      "weight": 10,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a promoted release with the previous release running as warm standby",
+      "when": "deploy runs with the previous release requested under continuous traffic",
+      "then": [
+        "no production request fails",
+        "production serves the previous release from exactly the standby tasks, with no new task started",
+        "preview serves the release that was live, still warm",
+        "the manifest records the rollback"
+      ],
+      "deadline_seconds": 900
+    },
+    {
+      "id": "lifecycle.defective_release_rejected",
+      "plane": "lifecycle",
+      "weight": 16,
+      "hard_gate": "lifecycle.no_defective_traffic",
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a healthy deployment under continuous production traffic",
+      "when": "deploy runs with the release that carries the pricing regression requested",
+      "then": [
+        "deploy exits successfully",
+        "no production response comes from the defective release and none fails",
+        "production and its tasks are exactly as before",
+        "the standby color runs no tasks afterwards",
+        "the manifest records the rejection"
+      ],
+      "deadline_seconds": 900
+    },
+    {
+      "id": "lifecycle.repair_without_disruption",
+      "plane": "lifecycle",
+      "weight": 6,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a healthy deployment whose preview listener and standby service were deleted",
+      "when": "deploy runs with no release requested under continuous traffic",
+      "then": [
+        "no production request fails and no live task is replaced",
+        "the preview listener and the standby service exist again and preview forwards to the standby color",
+        "the manifest records an unchanged release"
+      ],
+      "deadline_seconds": 900
+    },
+    {
+      "id": "lifecycle.reapply_stable",
+      "plane": "lifecycle",
+      "weight": 4,
+      "fidelity": "state+real",
+      "implementation": "executable",
+      "given": "a repaired deployment",
+      "when": "a plan is generated directly against the submission's infrastructure directory",
+      "then": [
+        "the plan resolves every variable without running deploy",
+        "no resource is planned for creation or deletion"
+      ],
+      "deadline_seconds": 600
+    },
+    {
+      "id": "lifecycle.destroy_clean",
+      "plane": "lifecycle",
+      "weight": 8,
+      "hard_gate": "lifecycle.baseline_preserved",
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the inventory captured before deployment, including pre-existing legacy resources",
+      "when": "destroy runs and the environment is inventoried again",
+      "then": [
+        "no resource carrying this deployment's prefix remains",
+        "the pre-existing legacy table, cluster and log group are untouched"
+      ],
+      "deadline_seconds": 900
+    }
+  ]
+}

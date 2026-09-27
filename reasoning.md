@@ -1,0 +1,187 @@
+# BeaconFare Release Cutover — Reasoning
+
+## Introduction
+
+BeaconFare prices freight lanes and stores every issued quote. The product
+problem is not the API; it is **shipping a new release of it safely**. A
+previous release with a rounding regression reached customers because it
+was perfectly healthy. The platform the model builds must therefore:
+
+- stage every candidate release next to production, on real infrastructure;
+- prove it through a **preview listener** before any customer request reaches it;
+- switch customers over without failing a single request;
+- keep the previous release warm so a rollback is a listener change;
+- reject a candidate that fails its proof, automatically, with production untouched.
+
+Three images are supplied, one per release (3.4.0, 3.5.0, 3.6.0). The
+version and pricing build are baked in at build time, so nothing in a task
+definition can alter them. The runtime picks, per environment, which of
+3.5.0 and 3.6.0 is built with the `legacy_floor` pricing regression. The
+model sees the choice in its own environment only by running the self-test;
+the verifier makes a fresh choice, so hard coding "3.6.0 is bad" fails half
+the time and skipping verification fails always.
+
+The application exists to make the release mechanics observable. Every
+response carries `X-BeaconFare-Version`, `X-BeaconFare-Color` and
+`X-BeaconFare-Task`, so the verifier can say exactly which release, color and
+task answered each production request during a release. `GET
+/release/selftest` prices four reference lanes and round-trips a probe item
+through DynamoDB; the defective build fails it while `/health/ready` stays
+`200`. That gap between *healthy* and *correct* is the core of the task.
+
+The model writes `infra/*.tf`, a `deploy.sh` that acts as a release
+controller driven by `BEACONFARE_RELEASE`, a `destroy.sh`, and a manifest.
+
+## Infrastructure Used
+
+| Service | Job in this system | What connects to it |
+|---|---|---|
+| **VPC** (2 public, 2 private subnets, IGW, route tables, security groups) | Public ALB subnets and private task subnets. SGs are declared (ALB admits both listener ports; tasks admit 8080 from the ALB SG only) but not enforced by the emulator, so they are checked as declarations. | ALB, both ECS services |
+| **Application Load Balancer** | One internet-facing ALB with two listeners. **Production** forwards to the live color, **preview** to the standby color. Promotion and rollback are in-place listener modifications that swap the two. | Clients, verifier, `deploy.sh` (self-test via preview) |
+| **Target groups** (blue, green) | One `ip` target group per color on 8080 with `/health/ready`. Target health tells the controller when a color's tasks are registered and ready. | ALB listeners, ECS services |
+| **ECS cluster + two Fargate services** | The blue and green colors. Each runs one release at a time, selected by task definition, at `api_desired_count` or `0` tasks depending on the release state. Tasks set `DEPLOYMENT_COLOR`. | Target groups, DynamoDB |
+| **ECS task definitions** | One per color × release. The emulator does not echo container definitions back, so they sit under `ignore_changes`; a release therefore selects its own definition instead of mutating one. | ECS services |
+| **DynamoDB** (quotes table, TTL on `expires_at`) | Durable store shared by both colors and every release. Proves quotes written during a cutover survive it and that the self-test's storage round trip works. | Every task |
+| **IAM** (execution role, task role) | Execution role ships logs only; one task role for every release with four DynamoDB actions on the quotes table only. Declaration-checked. | ECS task definitions |
+| **CloudWatch Logs** | API log group with the configured retention; every task definition uses `awslogs`. | ECS task definitions |
+
+Emulator facts the design rests on (all published in `runtime.md`):
+ECS deployments are simplified — no circuit breaker, no min/max percent, no
+automatic rollback — so the safety net has to be built by the model, not
+configured; each listener port is its own socket on the endpoint host;
+container definitions are not read back in the registered shape.
+
+## Operational Flows
+
+### 1. First deployment
+
+```mermaid
+sequenceDiagram
+    participant D as deploy.sh
+    participant TF as Terraform
+    participant ALB as ALB
+    participant B as blue service
+    participant G as green service
+    D->>TF: apply (live=blue, blue=initial×N, green=0)
+    TF->>B: create service, N tasks of initial
+    TF->>G: create service, 0 tasks
+    TF->>ALB: production→blue TG, preview→green TG
+    D->>ALB: poll production until N healthy targets and 3N responses report initial/blue
+    D->>D: manifest (outcome initial)
+```
+
+### 2. Candidate release: verify, then promote or reject
+
+```mermaid
+flowchart TD
+    R[BEACONFARE_RELEASE=R] --> A{R live?}
+    A -- yes --> U[apply current state: repair only<br/>outcome unchanged]
+    A -- no --> W{R is warm standby<br/>at N running tasks?}
+    W -- yes --> RB[rollback: swap listeners only<br/>outcome rolled_back]
+    W -- no --> S[apply: standby color := R × N<br/>production untouched]
+    S --> P[wait: preview serves R from N healthy targets]
+    P --> T{GET /release/selftest via preview<br/>passes on every distinct task?}
+    T -- yes --> PR[apply: swap listeners<br/>old live becomes warm standby<br/>outcome promoted]
+    T -- no --> RJ[apply: candidate color := 0 tasks<br/>production untouched<br/>outcome rejected, exit 0]
+```
+
+### 3. Production during a promotion
+
+```mermaid
+sequenceDiagram
+    participant C as Customers (verifier traffic)
+    participant PL as Production listener
+    participant PV as Preview listener
+    participant L as Live color (old)
+    participant S as Standby color (candidate)
+    C->>PL: POST/GET /quotes
+    PL->>L: every request
+    Note over S: candidate tasks start, register, pass selftest via PV
+    PV->>S: selftest × every task
+    Note over PL,PV: ModifyListener ×2 (swap)
+    C->>PL: POST/GET /quotes
+    PL->>S: every request from now on
+    PV->>L: old release stays warm
+```
+
+### 4. Rollback and repair
+
+Rollback is flow 2's middle branch: the listeners swap back onto the tasks
+that were already running, and the verifier proves it by comparing task ARNs
+before and after. Repair deletes the preview listener and the standby ECS
+service; a `deploy.sh` run with no release requested re-applies the recorded
+state, which recreates both without touching the live service or the
+production listener.
+
+### 5. State
+
+`deploy.sh` keeps `live_color`, `color_release` and `color_count` in
+`infra/release.auto.tfvars.json`. That file is the durable record between
+runs and is auto-loaded, so the verifier's standalone `plan -refresh=false`
+agrees with the last run. Leftover release state without Terraform state
+(from the agent's own testing) is discarded on the first verifier run.
+
+## Score
+
+Eleven obligations, 100 points. Only 100 passes.
+
+### Verified promotion and defective-release rejection — 32
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `lifecycle.zero_downtime_promotion` | 16 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
+| `lifecycle.defective_release_rejected` | 16 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. |
+
+### Instant rollback, repair and stable state — 20
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `lifecycle.instant_rollback` | 10 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
+| `lifecycle.repair_without_disruption` | 6 | Preview listener and standby service are deleted; a no-release deploy restores both, preview forwards to standby, no production request fails, no live task is replaced. |
+| `lifecycle.reapply_stable` | 4 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
+
+### Blue/green topology — 18
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `declared.release_topology` | 8 | In state: both listeners on the configured ports, each forwarding to exactly one, different color TG; both TGs `ip`/8080/`/health/ready`; both services private, no public IP, own TG; their task definitions use a supplied image and the right `DEPLOYMENT_COLOR`. |
+| `realized.initial_release` | 10 | Live: production→one color, preview→the other; live color has N healthy targets and N running tasks, standby 0; every production response is initial/live color from >1 task; manifest says `initial`. |
+
+### Product traffic — 10
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `observed.quotes_roundtrip` | 10 | Fresh quotes are priced by the published rule, read back with the same fare and `priced_by`, and exist in the manifest's table. |
+
+### Managed platform and isolation — 12
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `declared.managed_iac` | 4 | Gate. Every scored resource family is in state and the manifest's ARNs resolve to state. |
+| `declared.identity_data_logs` | 8 | Quotes table key/billing/TTL; execution role logs-only; task role four actions on the quotes table only; no wildcards; awslogs to managed groups with exact retention. Declaration only for IAM. |
+
+### Destruction — 8
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `lifecycle.destroy_clean` | 8 | Gate `lifecycle.baseline_preserved`, cap **79** on leak. Nothing carrying the prefix remains; the pre-existing `<prefix>-legacy-*` table, cluster and log group are untouched. |
+
+### Gates and caps
+
+- `declared.managed_iac` failing means the declared plane is unproven.
+- Serving the defective release caps the total at 39: a pipeline that ships
+  mispriced freight is not a partial success.
+- Deleting or leaking resources caps at 79.
+
+### Why wrong designs fail
+
+| Design | Fails |
+|---|---|
+| Single service, update task definition in place | topology, promotion (no standby, tasks replaced), rollback, rejection (regression goes live → cap 39) |
+| Blue/green but promote on target health | rejection → cap 39 |
+| One `terraform apply` that swaps listeners in the same run it stages the candidate | promotion is unverified; rejection → cap 39 |
+| Change image inside one task definition per color | image change ignored after first apply; promotion never changes version |
+| Redeploy previous release instead of swapping | rollback (new task ARNs) |
+| Release state kept only in memory or a temp file | rollback/repair pick the wrong color; standalone plan shows changes |
+| `-var` flags only inside deploy.sh | standalone plan fails |
+| Destroy by name prefix | legacy decoys deleted → cap 79 |

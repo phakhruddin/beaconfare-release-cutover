@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BeaconFare deployment manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["deployment", "network", "edge", "compute", "data", "roles", "logs", "release"],
+  "$defs": {
+    "arn": {"type": "string", "pattern": "^arn:"},
+    "color": {"type": "string", "enum": ["blue", "green"]},
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blue", "green"],
+      "properties": {"blue": {"$ref": "#/$defs/arn"}, "green": {"$ref": "#/$defs/arn"}}
+    },
+    "url": {"type": "string", "pattern": "^http://[^/]+:[0-9]+$"}
+  },
+  "properties": {
+    "deployment": {"type": "string", "minLength": 1},
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vpc_id", "public_subnet_ids", "private_subnet_ids"],
+      "properties": {
+        "vpc_id": {"type": "string", "minLength": 1},
+        "public_subnet_ids": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+        "private_subnet_ids": {"type": "array", "minItems": 2, "items": {"type": "string"}}
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["load_balancer_arn", "dns_name", "host_header", "production_listener_arn",
+                   "production_url", "preview_listener_arn", "preview_url"],
+      "properties": {
+        "load_balancer_arn": {"$ref": "#/$defs/arn"},
+        "dns_name": {"type": "string", "minLength": 1},
+        "host_header": {"type": "string", "minLength": 1},
+        "production_listener_arn": {"$ref": "#/$defs/arn"},
+        "production_url": {"$ref": "#/$defs/url"},
+        "preview_listener_arn": {"$ref": "#/$defs/arn"},
+        "preview_url": {"$ref": "#/$defs/url"}
+      }
+    },
+    "compute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster_arn", "services", "target_groups"],
+      "properties": {
+        "cluster_arn": {"$ref": "#/$defs/arn"},
+        "services": {"$ref": "#/$defs/colors"},
+        "target_groups": {"$ref": "#/$defs/colors"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quotes_table"],
+      "properties": {
+        "quotes_table": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "arn"],
+          "properties": {"name": {"type": "string"}, "arn": {"$ref": "#/$defs/arn"}}
+        }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_role_arn", "task_role_arn"],
+      "properties": {
+        "execution_role_arn": {"$ref": "#/$defs/arn"},
+        "task_role_arn": {"$ref": "#/$defs/arn"}
+      }
+    },
+    "logs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groups"],
+      "properties": {"groups": {"type": "array", "minItems": 1, "items": {"type": "string"}}}
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["live_version", "live_color", "standby_version", "standby_color", "last_request"],
+      "properties": {
+        "live_version": {"type": "string"},
+        "live_color": {"$ref": "#/$defs/color"},
+        "standby_version": {"type": ["string", "null"]},
+        "standby_color": {"$ref": "#/$defs/color"},
+        "last_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "outcome"],
+          "properties": {
+            "version": {"type": "string"},
+            "outcome": {"type": "string", "enum": ["initial", "unchanged", "promoted", "rolled_back", "rejected"]}
+          }
+        }
+      }
+    }
+  }
+}

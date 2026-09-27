@@ -1,0 +1,63 @@
+schema_version = "1.1"
+
+artifacts = [
+  { source = "/workspace/submission", destination = "submission", exclude = [
+    "*/.terraform",
+    "*/.terraform/**",
+    "*/terraform.tfstate",
+    "*/terraform.tfstate.*",
+    "*/config.auto.tfvars.json",
+    "*/.terraform.tfstate.lock.info",
+  ] },
+  { source = "/workspace/evidence", destination = "evidence" },
+]
+
+[task]
+name = "devcloud/beaconfare-release-cutover"
+description = "Build the blue/green release platform for a freight quote API on ECS: a preview listener that proves each candidate release before customers see it, zero-downtime promotion, instant rollback onto a warm standby, and automatic rejection of a release that fails verification."
+keywords = [
+  "compute-and-deployment",
+  "terraform",
+  "opentofu",
+  "ecs",
+  "blue-green",
+  "alb-listeners",
+  "release-verification",
+  "rollback",
+  "zero-downtime",
+]
+authors = [{ name = "Deen", email = "phab019@expert.micro1.ai" }]
+
+[metadata]
+source = "devcloudbenchmark"
+environment_id = "devcloud"
+task_id = "0"
+instance_id = "compute_and_deployment_beaconfare_release_cutover"
+category = "compute_and_deployment"
+difficulty = "hard"
+version = "0.1.0"
+
+[agent]
+timeout_sec = 43200.0
+user = "agent"
+
+[verifier]
+timeout_sec = 7200.0
+environment_mode = "separate"
+user = "verifier"
+
+[verifier.environment]
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 30720
+gpus = 0
+allow_internet = true
+
+[environment]
+build_timeout_sec = 3600.0
+cpus = 4
+memory_mb = 8192
+storage_mb = 30720
+gpus = 0
+allow_internet = true
