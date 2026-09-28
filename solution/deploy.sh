@@ -70,9 +70,36 @@ jq -e --arg v "$REQUESTED" '[.releases[].version] | index($v) != null' "$CONFIG_
 log "prefix=$RESOURCE_PREFIX live=$LIVE_COLOR/$LIVE_VERSION requested=$REQUESTED desired=$DESIRED"
 
 # ---- helpers ----------------------------------------------------------------------
-apply() {
+tf_apply() {
   log "terraform apply ($(jq -c . "$STATE_FILE"))"
   terraform -chdir="$INFRA_DIR" apply -input=false -auto-approve -compact-warnings >&2
+}
+
+# Capacity. Terraform creates each service with its recorded count and then
+# ignores desired_count (see infra/compute.tf); this sets the count of every
+# color to what the release state records, through UpdateService.
+scale_colors() {
+  local c want got svc
+  for c in blue green; do
+    want=$(jq -r --arg c "$c" '.color_count[$c]' "$STATE_FILE")
+    svc=$(jq -r --arg c "$c" '.[$c]' <<<"$SERVICE_ARNS")
+    got=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+          --query 'services[0].desiredCount' --output text 2>/dev/null || echo "?")
+    if [ "$got" != "$want" ]; then
+      log "scaling $c: desiredCount $got -> $want"
+      "${AWSCLI[@]}" ecs update-service --cluster "$CLUSTER" --service "$svc" \
+        --desired-count "$want" >/dev/null || die "could not scale $c to $want"
+      got=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+            --query 'services[0].desiredCount' --output text 2>/dev/null || echo "?")
+      [ "$got" = "$want" ] || die "$c reports desiredCount=$got after scaling to $want"
+    fi
+  done
+}
+
+apply() {
+  tf_apply
+  [ -n "${SERVICE_ARNS:-}" ] || return 0
+  scale_colors
 }
 
 tf_out() { terraform -chdir="$INFRA_DIR" output -raw "$1"; }
@@ -100,7 +127,8 @@ running_tasks() {
 
 # wait_serving <url> <color> <version> <seconds>: the color's target group has
 # DESIRED healthy targets, its service runs DESIRED tasks, and 3*DESIRED
-# consecutive responses on <url> all come from <version> in <color>.
+# consecutive /health/ready answers on <url> are 200 from <version> in
+# <color>. A task still warming up answers 503, so this also waits out warm-up.
 wait_serving() {
   local url="$1" color="$2" version="$3" deadline=$(( $(date +%s) + $4 )) streak=0 need=$(( DESIRED * 3 ))
   local tg; tg=$(jq -r --arg c "$color" '.[$c]' <<<"$TG_ARNS")
@@ -109,7 +137,7 @@ wait_serving() {
     local healthy running code v c
     healthy=$(healthy_targets "$tg"); running=$(running_tasks "$svc")
     if [ "$healthy" -ge "$DESIRED" ] && [ "$running" = "$DESIRED" ]; then
-      code=$(probe "$url" /release); v=$(header X-BeaconFare-Version); c=$(header X-BeaconFare-Color)
+      code=$(probe "$url" /health/ready); v=$(header X-BeaconFare-Version); c=$(header X-BeaconFare-Color)
       if [ "$code" = "200" ] && [ "$v" = "$version" ] && [ "$c" = "$color" ]; then
         streak=$(( streak + 1 ))
         [ "$streak" -ge "$need" ] && { log "$color serves $version on $url ($healthy healthy)"; return 0; }
@@ -117,9 +145,40 @@ wait_serving() {
       fi
     fi
     streak=0
-    [ "$(date +%s)" -ge "$deadline" ] && { log "timeout: $color/$version on $url healthy=$healthy running=$running last=${code:-}/${v:-}/${c:-}"; return 1; }
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      log "timeout: $color/$version on $url healthy=$healthy running=$running last=${code:-}/${v:-}/${c:-}"
+      "${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+        --query 'services[0].{desired:desiredCount,running:runningCount,pending:pendingCount,taskDefinition:taskDefinition,deployments:deployments,events:events[:5]}' \
+        --output json >&2 2>/dev/null || true
+      "${AWSCLI[@]}" elbv2 describe-target-health --target-group-arn "$tg" --output json >&2 2>/dev/null || true
+      diagnose_color "$svc"
+      return 1
+    fi
     sleep 3
   done
+}
+
+# Why a color is not running: stopped tasks and what their containers logged.
+diagnose_color() {
+  local svc="$1" name stopped td family
+  name=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+         --query 'services[0].serviceName' --output text 2>/dev/null || true)
+  stopped=$("${AWSCLI[@]}" ecs list-tasks --cluster "$CLUSTER" --service-name "$name" --desired-status STOPPED \
+            --query 'taskArns[:5]' --output text 2>/dev/null || true)
+  if [ -n "$stopped" ] && [ "$stopped" != "None" ]; then
+    # shellcheck disable=SC2086
+    "${AWSCLI[@]}" ecs describe-tasks --cluster "$CLUSTER" --tasks $stopped \
+      --query 'tasks[].{task:taskArn,last:lastStatus,stoppedReason:stoppedReason,containers:containers[].{exit:exitCode,reason:reason}}' \
+      --output json >&2 2>/dev/null || true
+  else
+    log "no stopped tasks recorded for $name"
+  fi
+  td=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+       --query 'services[0].taskDefinition' --output text 2>/dev/null || true)
+  family=$(printf '%s' "$td" | sed -E 's#.*/##; s#:[0-9]+$##')
+  log "last container output in /ecs/$family:"
+  "${AWSCLI[@]}" logs filter-log-events --log-group-name "/ecs/$family" --limit 30 \
+    --query 'events[].message' --output text >&2 2>/dev/null || log "(no log events)"
 }
 
 wait_idle() {  # wait_idle <color>: the color runs no tasks
@@ -133,13 +192,17 @@ wait_idle() {  # wait_idle <color>: the color runs no tasks
 }
 
 # selftest <color> <version>: every candidate task passes, through preview.
+# 503 warming_up is not a verdict: that task is asked again later.
 selftest() {
-  local color="$1" version="$2" attempts=$(( DESIRED * 25 )) seen=""
-  for _ in $(seq "$attempts"); do
+  local color="$1" version="$2" deadline=$(( $(date +%s) + 180 )) seen=""
+  while [ "$(date +%s)" -lt "$deadline" ]; do
     local code task v body
     code=$(probe "$PREVIEW_URL" /release/selftest); task=$(header X-BeaconFare-Task); v=$(header X-BeaconFare-Version)
     body=$(cat "$WORK/b" 2>/dev/null || true)
     if [ "$v" != "$version" ]; then sleep 1; continue; fi
+    if [ "$code" = "503" ] && jq -e '.code == "warming_up"' <<<"$body" >/dev/null 2>&1; then
+      sleep 2; continue
+    fi
     if [ "$code" != "200" ] || ! jq -e '.passed == true' <<<"$body" >/dev/null 2>&1; then
       log "selftest FAILED on $task ($code): ${body:0:400}"
       return 1
@@ -150,7 +213,7 @@ selftest() {
       return 0
     fi
   done
-  log "selftest could not reach $DESIRED distinct $version tasks (saw:$seen)"
+  log "selftest could not reach $DESIRED distinct warm $version tasks (saw:$seen)"
   return 1
 }
 
@@ -164,6 +227,7 @@ EDGE_HOST=$(tf_out edge_dns_name)
 CLUSTER=$(tf_out cluster_arn)
 TG_ARNS=$(tf_json target_group_arns)
 SERVICE_ARNS=$(tf_json service_arns)
+scale_colors
 
 STANDBY_COLOR=$(other "$LIVE_COLOR")
 STANDBY_VERSION=$(st ".color_release.${STANDBY_COLOR}")
@@ -171,7 +235,7 @@ STANDBY_COUNT=$(st ".color_count.${STANDBY_COLOR}")
 
 wait_serving "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION" 300 || die "live color $LIVE_COLOR is not serving $LIVE_VERSION"
 if [ "$STANDBY_COUNT" -gt 0 ]; then
-  wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION" 300 || log "standby $STANDBY_COLOR is not serving $STANDBY_VERSION"
+  wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION" 180 || log "standby $STANDBY_COLOR is not serving $STANDBY_VERSION"
 fi
 
 OUTCOME=unchanged

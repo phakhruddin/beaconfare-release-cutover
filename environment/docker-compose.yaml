@@ -44,6 +44,7 @@ services:
     command: [ "/bin/sh", "/runtime.sh" ]
     environment:
       DOCKER_BUILDKIT: "1"
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
     networks:
       - solver-control
     restart: "no"

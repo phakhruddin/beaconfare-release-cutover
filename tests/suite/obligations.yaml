@@ -15,10 +15,11 @@
     },
     {
       "id": "rollback_repair",
-      "label": "Instant rollback, repair and stable state",
-      "weight": 20,
+      "label": "Instant rollback, drift and repair, stable state",
+      "weight": 28,
       "obligations": [
         "lifecycle.instant_rollback",
+        "lifecycle.drift_restored",
         "lifecycle.repair_without_disruption",
         "lifecycle.reapply_stable"
       ]
@@ -26,7 +27,7 @@
     {
       "id": "topology",
       "label": "Blue/green topology",
-      "weight": 18,
+      "weight": 14,
       "obligations": [
         "declared.release_topology",
         "realized.initial_release"
@@ -35,7 +36,7 @@
     {
       "id": "product",
       "label": "Product traffic",
-      "weight": 10,
+      "weight": 6,
       "obligations": [
         "observed.quotes_roundtrip"
       ]
@@ -59,10 +60,10 @@
     }
   ],
   "planes": {
-    "declared": 20,
-    "realized": 10,
-    "observed": 10,
-    "lifecycle": 60
+    "declared": 18,
+    "realized": 8,
+    "observed": 6,
+    "lifecycle": 68
   },
   "hard_gates": [
     "trial.integrity",
@@ -93,14 +94,14 @@
     {
       "id": "declared.release_topology",
       "plane": "declared",
-      "weight": 8,
+      "weight": 6,
       "fidelity": "state",
       "implementation": "executable",
       "given": "the release-process, ALB and ECS contracts",
       "when": "listeners, target groups, services and task definitions are read from state",
       "then": [
         "the production and preview listeners use the configured ports and each forwards to exactly one, different, color target group",
-        "both target groups are ip targets on 8080 with the /health/ready health check",
+        "both target groups register ip targets and health-check /health/ready",
         "each color service runs in private subnets without a public IP, behind its own target group on 8080",
         "every task definition a color service uses selects a supplied image and sets DEPLOYMENT_COLOR to that color"
       ],
@@ -118,7 +119,7 @@
         "the quotes table is keyed on quote_id (S), on-demand, with TTL on expires_at",
         "the execution role only ships logs; the task role only uses the four quote actions on the quotes table",
         "no policy grants a wildcard action or resource",
-        "task definitions log with awslogs to managed groups retained for exactly the configured days"
+        "every task definition family has a managed /ecs/<family> log group retained for exactly the configured days"
       ],
       "note": "Declaration only for IAM: this endpoint records policies without evaluating them.",
       "deadline_seconds": 60
@@ -126,7 +127,7 @@
     {
       "id": "realized.initial_release",
       "plane": "realized",
-      "weight": 10,
+      "weight": 8,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a completed first deploy",
@@ -142,13 +143,13 @@
     {
       "id": "observed.quotes_roundtrip",
       "plane": "observed",
-      "weight": 10,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a ready deployment",
       "when": "fresh quotes are issued and read back through production",
       "then": [
-        "each quote is priced by the published rule and stored",
+        "each quote is issued by the live release and stored",
         "each quote reads back with the same fare and the release that priced it",
         "the quotes table holds the items"
       ],
@@ -160,9 +161,10 @@
       "weight": 16,
       "fidelity": "real",
       "implementation": "executable",
-      "given": "the initial release live under continuous production traffic",
+      "given": "the initial release live under continuous production traffic; every release warms up for tens of seconds after start",
       "when": "deploy runs with a correct later release requested",
       "then": [
+        "deploy waits out the candidate's warm-up instead of judging or promoting it early",
         "no production request fails while deploy runs and the release changes over exactly once",
         "when deploy returns, production serves only the new release from the other color and preview serves the old release",
         "the previously live tasks are still running, unchanged, as a warm standby",
@@ -184,6 +186,22 @@
         "production serves the previous release from exactly the standby tasks, with no new task started",
         "preview serves the release that was live, still warm",
         "the manifest records the rollback"
+      ],
+      "deadline_seconds": 900
+    },
+    {
+      "id": "lifecycle.drift_restored",
+      "plane": "lifecycle",
+      "weight": 8,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a warm blue/green pair whose listeners were swapped and whose standby was scaled down outside deploy.sh",
+      "when": "deploy runs with no release requested under continuous traffic",
+      "then": [
+        "no production request fails",
+        "production and preview forward to the recorded live and standby colors again",
+        "the standby runs its recorded release at the recorded count and live tasks are untouched",
+        "the manifest records an unchanged release"
       ],
       "deadline_seconds": 900
     },

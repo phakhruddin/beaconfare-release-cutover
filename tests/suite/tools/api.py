@@ -7,7 +7,6 @@ the very next request.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,8 +62,3 @@ class Api:
     def post(self, path: str, body: Any) -> ApiResponse:
         return self.request("POST", path, body)
 
-
-def expected_fare(origin: str, destination: str, weight_kg: float) -> int:
-    """The published pricing rule every correct release implements."""
-    band = sum(map(ord, origin + destination)) % 5 + 1
-    return 1500 + band * 700 + math.ceil(round(weight_kg * 10, 6)) * 35

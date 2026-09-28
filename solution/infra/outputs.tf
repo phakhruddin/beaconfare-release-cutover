@@ -16,7 +16,7 @@ output "quotes_table_arn" { value = aws_dynamodb_table.quotes.arn }
 
 output "execution_role_arn" { value = aws_iam_role.execution.arn }
 output "task_role_arn" { value = aws_iam_role.task.arn }
-output "log_groups" { value = [aws_cloudwatch_log_group.api.name] }
+output "log_groups" { value = [for g in aws_cloudwatch_log_group.api : g.name] }
 
 output "live_color" { value = var.live_color }
 output "standby_color" { value = local.standby_color }

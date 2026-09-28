@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .api import Api, expected_fare
+from .api import Api
 
 LANES = ["SEA", "PDX", "LAX", "JFK", "ORD", "ATL", "MIA", "DEN", "BOS", "DFW"]
 
@@ -25,7 +25,6 @@ class Sample:
     version: str
     color: str
     error: str = ""
-    fare_ok: bool = True
     quote_id: str = ""
 
 
@@ -42,9 +41,6 @@ class TrafficReport:
 
     def versions(self) -> set[str]:
         return {s.version for s in self.samples if s.version}
-
-    def mispriced(self) -> list[Sample]:
-        return [s for s in self.samples if not s.fare_ok]
 
     def quote_ids(self) -> list[str]:
         return [s.quote_id for s in self.samples if s.quote_id]
@@ -82,7 +78,6 @@ class Traffic:
             if response.status == 201:
                 body = response.json() or {}
                 sample.quote_id = str(body.get("quote_id", ""))
-                sample.fare_ok = body.get("fare_cents") == expected_fare(origin, destination, weight)
                 if sample.quote_id:
                     written.append(sample.quote_id)
             self._record(sample)

@@ -17,7 +17,8 @@ resource "aws_dynamodb_table" "quotes" {
 }
 
 resource "aws_cloudwatch_log_group" "api" {
-  name              = "/beaconfare/${local.prefix}/api"
+  for_each          = local.families
+  name              = "/ecs/${each.value}"
   retention_in_days = var.log_retention_days
   tags              = local.tags
 }

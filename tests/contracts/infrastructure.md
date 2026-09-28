@@ -16,7 +16,9 @@ settings and relationships for that resource.
   or modify resources that already exist, in particular anything named
   `<resource_prefix>-legacy-*`.
 - Resources created only with the AWS CLI are not accepted. You may use the CLI
-  to inspect health, fetch identifiers and call the API.
+  to inspect health, fetch identifiers, call the API, and change the desired
+  count of an ECS service your Terraform or OpenTofu manages (see
+  `runtime.md`).
 
 ## Service Contracts
 

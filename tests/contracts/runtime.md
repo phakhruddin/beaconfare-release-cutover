@@ -31,13 +31,20 @@ The HTTP API is in `openapi.yaml`. It listens on `8080`.
 - Every response carries `X-BeaconFare-Version` (the release), 
   `X-BeaconFare-Color` (the task's `DEPLOYMENT_COLOR`) and
   `X-BeaconFare-Task` (the task's identity).
-- `GET /health/ready` answers `200` when the quotes table exists and is
-  `ACTIVE`, otherwise `503`. It says nothing about pricing correctness.
+- **Warm-up.** Every release loads its pricing cache after the process
+  starts, which takes tens of seconds; the exact time is fixed in the image
+  and is not published. Until it finishes, `/health/ready`,
+  `/release/selftest` and `POST /quotes` answer `503` with code
+  `warming_up`. `/health/live` and `GET /release` answer at once.
+- `GET /health/ready` answers `200` when warm-up is over and the quotes table
+  exists and is `ACTIVE`, otherwise `503`. It says nothing about pricing
+  correctness.
 - `GET /release/selftest` prices a fixed set of reference lanes, writes,
   reads back and deletes a probe item in the quotes table, and answers `200`
   with `"passed": true` only if all of that is correct. Otherwise it answers
   `500` with `"passed": false` and the failures. Probe items carry
-  `expires_at`.
+  `expires_at`. A `503` with code `warming_up` is not a result: the task
+  has not finished warming up and must be asked again later.
 - `POST /quotes` prices a lane and stores the quote in the quotes table.
   `GET /quotes/{quote_id}` reads it back. Any release reads quotes written by
   any other release.
@@ -60,6 +67,9 @@ The image writes one JSON object per line to stdout.
   | `aws_ecs_task_definition` | `container_definitions` | Returned in a different shape than registered. |
   | `aws_ecs_service` | `scheduling_strategy` | Not echoed back. |
 
+  `logConfiguration` is among what is not returned: see
+  `services/cloudwatch-logs.md` for where logs actually go.
+
   Declare both normally, then add a **narrow**
   `lifecycle { ignore_changes = [...] }` for each so redeployment stays
   stable. Understand the consequence: once a task definition is registered,
@@ -72,6 +82,12 @@ The image writes one JSON object per line to stdout.
   periods, the deployment circuit breaker and automatic rollback are
   recorded but **not acted on**. Changing only `desired_count` does not
   replace running tasks.
+- **A Terraform or OpenTofu update of an existing service's
+  `desired_count` is not applied.** The apply succeeds and state records the
+  new value, but the service keeps its previous desired count. The count a
+  service is **created** with is honored, and so is
+  `aws ecs update-service --desired-count` on an existing service. Changing
+  the task definition through Terraform or OpenTofu works normally.
 - **Each listener port is one socket on the endpoint host.** A listener on
   port *P* is reached at `http://<host of aws_endpoint_url>:P`. When only one
   listener uses a port, any `Host` header reaches it.

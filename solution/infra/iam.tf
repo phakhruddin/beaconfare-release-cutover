@@ -24,7 +24,7 @@ resource "aws_iam_role_policy" "execution" {
       Sid      = "ShipLogs"
       Effect   = "Allow"
       Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-      Resource = ["${aws_cloudwatch_log_group.api.arn}:*"]
+      Resource = [for g in aws_cloudwatch_log_group.api : "${g.arn}:*"]
     }]
   })
 }

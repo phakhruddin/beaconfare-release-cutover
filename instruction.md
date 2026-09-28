@@ -123,11 +123,16 @@ without going through `deploy.sh`, after the last release.
    no production request is ever answered by it, production is untouched and
    the candidate color is scaled to zero.
 5. Quotes written before and during any release stay readable afterwards.
-6. Rerunning `deploy.sh` with no release requested after managed resources
+   Every release takes tens of seconds to warm up after it starts; a
+   candidate is judged and switched in only once it is warm.
+6. If listeners or task counts are changed outside `deploy.sh`, a run with
+   no release requested puts them back to your recorded release state
+   without failing a production request.
+7. Rerunning `deploy.sh` with no release requested after managed resources
    were deleted restores them without disturbing production.
-7. A standalone `terraform plan -refresh=false` against `infra/` shows
+8. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-8. `destroy.sh` removes everything this deployment owns and nothing else.
+9. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -136,9 +141,9 @@ The score is weighted by category. A run passes only at 100.
 | Category | Points |
 |---|---:|
 | Verified promotion and defective-release rejection | 32 |
-| Instant rollback, repair and stable state | 20 |
-| Blue/green topology | 18 |
-| Product traffic | 10 |
+| Instant rollback, drift and repair, stable state | 28 |
+| Blue/green topology | 14 |
+| Product traffic | 6 |
 | Managed platform and isolation | 12 |
 | Destruction | 8 |
 | **Total** | **100** |

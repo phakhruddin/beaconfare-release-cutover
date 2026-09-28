@@ -16,7 +16,25 @@ rand() {
 if [ $(( 0x$(rand 1) % 2 )) -eq 0 ]; then defective=3.5.0; good=3.6.0; else defective=3.6.0; good=3.5.0; fi
 
 mkdir -p "$CONFIG_DIR" "$PRIVATE_DIR"
-APPLICATION_DIR="$APPLICATION_DIR" DEFECTIVE_VERSION="$defective" /bin/sh "$APPLICATION_DIR/build.sh"
+# Every release warms up for this long after start before it is ready.
+warmup=$(( 0x$(rand 1) % 26 + 30 ))
+APPLICATION_DIR="$APPLICATION_DIR" DEFECTIVE_VERSION="$defective" WARMUP_SECONDS="$warmup" /bin/sh "$APPLICATION_DIR/build.sh"
+
+# Keep every release image referenced by a running container for the life of
+# this environment. An image no container uses can be removed from the shared
+# daemon while the environment is still running, and a later release would
+# then fail to start with "pull access denied". The containers carry this
+# compose project's labels, so `compose down --remove-orphans` removes them.
+project="${COMPOSE_PROJECT_NAME:-beaconfare}"
+for version in 3.4.0 3.5.0 3.6.0; do
+  name="${project}-release-keeper-$(echo "$version" | tr . -)"
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --network none --restart unless-stopped \
+    --label "com.docker.compose.project=${project}" \
+    --label "com.docker.compose.service=release-keeper-$(echo "$version" | tr . -)" \
+    --label "com.docker.compose.oneoff=False" \
+    --entrypoint sleep "beaconfare/api:$version" infinity >/dev/null
+done
 
 image_id() {
   docker image inspect --format '{{.Id}}' "$1"

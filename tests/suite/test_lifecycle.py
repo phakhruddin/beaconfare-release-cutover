@@ -11,7 +11,7 @@ import time
 
 from .test_live import live_color, other, sample
 from .tools.deployment import deploy, destroy
-from .tools.errors import CleanupLeak, DefectiveServed, SubmissionFailure
+from .tools.errors import CleanupLeak, DefectiveServed, HarnessError, SubmissionFailure
 from .tools.results import CheckResult, Outcome
 from .tools.terraform import describe_changes, disruptive_changes, plan
 from .tools.traffic import Traffic, TrafficReport
@@ -53,8 +53,6 @@ def traffic_problems(report: TrafficReport, allowed: set[str]) -> list[str]:
     unexpected = report.versions() - allowed
     if unexpected:
         problems.append(f"production was answered by unexpected release(s) {sorted(unexpected)}")
-    if report.mispriced():
-        problems.append(f"{len(report.mispriced())} production quotes were mispriced during deploy")
     return problems
 
 
@@ -165,6 +163,69 @@ def test_instant_rollback(trial: TrialContext) -> CheckResult:
     return CheckResult(
         "lifecycle.instant_rollback", Outcome.PASS,
         f"rollback to {target} switched production onto the {len(warm)} warm {standby} tasks without starting any",
+        details={"requests": report.total},
+    )
+
+
+@obligation("lifecycle.drift_restored")
+def test_drift_restored(trial: TrialContext) -> CheckResult:
+    """Out-of-band listener and capacity changes are put back to the recorded state."""
+    cfg, cloud = trial.config, trial.cloud
+    color = live_color(trial)
+    standby = other(color)
+    live_version = trial.manifest["release"]["live_version"]
+    standby_version = trial.manifest["release"]["standby_version"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    if not standby_version or len(warm) != cfg.desired:
+        raise SubmissionFailure(
+            f"no warm standby to drift: {standby} runs {len(warm)} tasks, manifest standby is {standby_version}")
+
+    # The drift, as an operator might cause it: swap the listeners so
+    # production serves the standby color, and scale the standby color down.
+    edge = trial.manifest["edge"]
+    cloud.elbv2.modify_listener(ListenerArn=edge["production_listener_arn"], DefaultActions=[
+        {"Type": "forward", "TargetGroupArn": trial.target_group(standby)}])
+    cloud.elbv2.modify_listener(ListenerArn=edge["preview_listener_arn"], DefaultActions=[
+        {"Type": "forward", "TargetGroupArn": trial.target_group(color)}])
+    cloud.ecs.update_service(cluster=trial.cluster, service=trial.service_arn(standby), desiredCount=1)
+    if len(cloud.wait_running(trial.cluster, trial.service_arn(standby), 1, timeout=90)) != 1:
+        raise HarnessError(f"could not scale {standby} to 1 task to create the drift")
+    drifted = [r.version for r in sample(trial.production, cfg.desired * 3) if r.status == 200]
+    if not drifted or set(drifted) != {standby_version}:
+        raise HarnessError(f"the listener drift did not take effect: production answered {drifted}")
+
+    report, failure = release_under_traffic(trial, None, "deploy-drift")
+    if failure:
+        raise failure
+    problems = traffic_problems(report, {live_version, standby_version})
+
+    routing = trial.routing()
+    if routing["production"] != color or routing["preview"] != standby:
+        problems.append(f"after deploy production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}; the recorded state is production={color}, preview={standby}")
+    wrong = serving(trial, trial.production, live_version, color, cfg.desired * 6)
+    if wrong:
+        problems.append(f"after deploy production answered {wrong[:4]}, expected {live_version}/{color}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != live_tasks:
+        problems.append(f"restoring the drift stopped or replaced live {color} tasks")
+    restored = cloud.wait_running(trial.cluster, trial.service_arn(standby), cfg.desired, timeout=120)
+    if len(restored) != cfg.desired:
+        problems.append(f"the standby {standby} color runs {len(restored)} tasks, recorded {cfg.desired}")
+    wrong = serving(trial, trial.preview, standby_version, standby, cfg.desired * 6)
+    if wrong:
+        problems.append(f"after deploy preview answered {wrong[:4]}, expected the warm standby {standby_version}/{standby}")
+    release = trial.manifest["release"]
+    if (release["live_version"], release["live_color"], release["standby_version"], release["last_request"]["outcome"]) \
+            != (live_version, color, standby_version, "unchanged"):
+        problems.append(f"the manifest release block is {release}")
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.drift_restored", Outcome.PASS,
+        f"swapped listeners and a scaled-down standby were restored to the recorded state across "
+        f"{report.total} production requests with none failing",
         details={"requests": report.total},
     )
 

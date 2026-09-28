@@ -10,6 +10,14 @@ locals {
 
   standby_color = var.live_color == "blue" ? "green" : "blue"
 
+  # One task definition family per color and release. The endpoint writes
+  # container output to /ecs/<family>, so each family gets a managed log
+  # group of exactly that name.
+  families = {
+    for key, td in local.task_definitions :
+    key => "${var.resource_prefix}-${td.color}-${replace(td.version, ".", "-")}"
+  }
+
   releases = { for r in var.releases : r.version => r }
 
   # What each color runs. Before the first release state exists, the live

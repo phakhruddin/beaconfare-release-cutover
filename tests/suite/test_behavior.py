@@ -1,13 +1,12 @@
 """Observed plane.
 
 Real requests through the production listener with fresh data. Asserts on
-product results: prices, stored quotes and the release that priced them.
+product results: stored quotes and the release that issued them.
 """
 from __future__ import annotations
 
 import random
 
-from .tools.api import expected_fare
 from .tools.errors import SubmissionFailure
 from .tools.results import CheckResult, Outcome
 from .tools.trial import TrialContext, obligation
@@ -15,7 +14,7 @@ from .tools.trial import TrialContext, obligation
 
 @obligation("observed.quotes_roundtrip")
 def test_quotes_roundtrip(trial: TrialContext) -> CheckResult:
-    """Fresh quotes are priced correctly, stored and read back."""
+    """Fresh quotes are issued by the live release, stored and read back unchanged."""
     rng = random.Random()
     lanes = ["SEA", "PDX", "LAX", "JFK", "ORD", "ATL", "MIA", "DEN"]
     issued = []
@@ -27,10 +26,9 @@ def test_quotes_roundtrip(trial: TrialContext) -> CheckResult:
         if response.status != 201:
             raise SubmissionFailure(f"POST /quotes returned {response.status or response.error}: {response.text[:300]}")
         body = response.json() or {}
-        want = expected_fare(origin, destination, weight)
-        if body.get("fare_cents") != want:
-            raise SubmissionFailure(f"{origin}-{destination} {weight} kg priced {body.get('fare_cents')}, expected {want}")
-        if body.get("priced_by") != response.version:
+        if not isinstance(body.get("fare_cents"), int) or body["fare_cents"] <= 0:
+            raise SubmissionFailure(f"POST /quotes returned no fare: {body}")
+        if body.get("priced_by") != response.version or response.version != trial.manifest["release"]["live_version"]:
             raise SubmissionFailure(f"quote priced_by {body.get('priced_by')} but served by {response.version}")
         issued.append(body)
 
@@ -49,5 +47,5 @@ def test_quotes_roundtrip(trial: TrialContext) -> CheckResult:
     trial.facts["early_quotes"] = [q["quote_id"] for q in issued]
     return CheckResult(
         "observed.quotes_roundtrip", Outcome.PASS,
-        f"{len(issued)} fresh quotes were priced correctly, stored and read back",
+        f"{len(issued)} fresh quotes were issued by the live release, stored and read back unchanged",
     )

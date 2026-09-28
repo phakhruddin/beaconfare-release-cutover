@@ -40,6 +40,10 @@ Traps that carry the difficulty:
 5. **State that survives.** Which color is live must persist between runs
    and match a standalone plan.
 6. **Rollback must start nothing.** The verifier compares task ARNs.
+7. **Warm-up is not failure.** Releases answer `503 warming_up` for a
+   randomized 30–55 s after start; a self-test verdict only counts once warm.
+8. **Recorded state wins over drift.** Swapped listeners and a scaled-down
+   standby must be restored from the recorded state, not adopted.
 
 ## Layout
 
@@ -47,10 +51,11 @@ Traps that carry the difficulty:
 |---|---|
 | `instruction.md` | What the agent is asked to build. |
 | `reasoning.md` | Design, flows and score rationale for reviewers. |
-| `environment/` | Agent workspace image, supplied release images, public contracts. |
+| `environment/` | Agent workspace image, supplied release images, public contracts. `runtime.sh` also starts one idle `release-keeper` container per release image (labelled into the compose project, removed by `down --remove-orphans`) so no release image can be removed from the shared Docker daemon before it is deployed. |
 | `environment/workspace/contracts/release-process.md` | The product contract. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |
 | `tests/` | Verifier image and the weighted obligation suite. `tests/application` and `tests/contracts` mirror `environment/`, because Realm uploads only `tests/` as the verifier context. Keep them in sync. |
+| `scripts/diagnose-floci-scaling.sh` | Author-only diagnostic: probes how the pinned Floci image scales ECS services from zero. Not part of the agent or verifier environment. |
 | `tests/suite/obligations.yaml` | Single source of truth for scoring. The verifier refuses to start if its weights do not reconcile to 100. |
 
 ## Validating

@@ -40,6 +40,8 @@ def required(name: str) -> str:
 
 APP_VERSION = os.environ.get("APP_VERSION", "0.0.0")        # baked into the image
 PRICING_BUILD = os.environ.get("PRICING_BUILD", "standard")  # baked into the image
+WARMUP_SECONDS = float(os.environ.get("WARMUP_SECONDS", "0"))  # baked into the image
+STARTED = time.monotonic()
 ENDPOINT = required("AWS_ENDPOINT_URL")
 REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 QUOTES_TABLE = required("QUOTES_TABLE")
@@ -64,6 +66,17 @@ GOLDEN = [
 ]
 
 
+def warming_remaining() -> float:
+    """Seconds of warm-up left: the pricing cache loads after start."""
+    return max(0.0, WARMUP_SECONDS - (time.monotonic() - STARTED))
+
+
+def require_warm() -> None:
+    left = warming_remaining()
+    if left > 0:
+        raise ApiError(503, "warming_up", f"pricing cache loading, about {int(left) + 1}s left")
+
+
 class ApiError(Exception):
     def __init__(self, status: int, code: str, detail: str = "") -> None:
         super().__init__(code)
@@ -86,6 +99,7 @@ def now_iso() -> str:
 
 
 def create_quote(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    require_warm()
     origin, destination = str(body.get("origin", "")), str(body.get("destination", ""))
     weight = body.get("weight_kg")
     if not CODE.match(origin) or not CODE.match(destination):
@@ -123,6 +137,7 @@ def get_quote(quote_id: str) -> tuple[int, dict[str, Any]]:
 
 
 def ready() -> tuple[int, dict[str, Any]]:
+    require_warm()
     try:
         status = DDB.call("DescribeTable", {"TableName": QUOTES_TABLE})["Table"].get("TableStatus")
     except AwsError as exc:
@@ -134,6 +149,7 @@ def ready() -> tuple[int, dict[str, Any]]:
 
 def selftest() -> tuple[int, dict[str, Any]]:
     """Release verification: reference pricing plus a storage round trip."""
+    require_warm()
     failures = []
     for origin, destination, weight, expected in GOLDEN:
         got = fare_cents(origin, destination, weight)
@@ -239,7 +255,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    log("api_starting", port=PORT, version=APP_VERSION, color=COLOR, task=TASK, quotes_table=QUOTES_TABLE)
+    log("api_starting", port=PORT, version=APP_VERSION, color=COLOR, task=TASK, quotes_table=QUOTES_TABLE,
+        warmup_seconds=WARMUP_SECONDS)
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
     server.serve_forever()

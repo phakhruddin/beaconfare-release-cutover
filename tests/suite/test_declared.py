@@ -181,8 +181,10 @@ def test_release_topology(trial: TrialContext) -> CheckResult:
         if tg is None:
             problems.append(f"the {color} target group is not in state")
             continue
-        if tg.get("target_type") != "ip" or int(tg.get("port") or 0) != 8080 or tg.get("protocol") != "HTTP":
-            problems.append(f"the {color} target group is {tg.get('target_type')}/{tg.get('protocol')}/{tg.get('port')}")
+        # awsvpc tasks register by IP; the port that matters is the container
+        # port the service registers, checked below.
+        if tg.get("target_type") != "ip":
+            problems.append(f"the {color} target group target type is {tg.get('target_type')!r}, expected 'ip'")
         if _one(tg.get("health_check")).get("path") != "/health/ready":
             problems.append(f"the {color} target group health check path is {_one(tg.get('health_check')).get('path')}")
 
@@ -288,13 +290,17 @@ def test_identity_data_logs(trial: TrialContext) -> CheckResult:
         elif int(group.get("retention_in_days") or 0) != trial.config.log_retention_days:
             problems.append(f"log group {name} retains {group.get('retention_in_days')} days, "
                             f"expected {trial.config.log_retention_days}")
-    for service in _values(state_json, "aws_ecs_service"):
-        td = _task_definition(state_json, service.get("task_definition") or "")
-        for container in _containers(td or {}):
-            logging = container.get("logConfiguration") or {}
-            group = (logging.get("options") or {}).get("awslogs-group")
-            if logging.get("logDriver") != "awslogs" or group not in groups:
-                problems.append(f"service {service.get('name')} does not log with awslogs to a managed group")
+    # The endpoint does not echo logConfiguration back into state; it writes
+    # every task's output to /ecs/<family>. That group must be managed, or it
+    # is created outside state and leaks past destroy.
+    for td in _values(state_json, "aws_ecs_task_definition"):
+        expected = f"/ecs/{td.get('family')}"
+        group = groups.get(expected)
+        if group is None:
+            problems.append(f"task definition family {td.get('family')} has no managed log group {expected}")
+        elif int(group.get("retention_in_days") or 0) != trial.config.log_retention_days:
+            problems.append(f"log group {expected} retains {group.get('retention_in_days')} days, "
+                            f"expected {trial.config.log_retention_days}")
 
     if problems:
         raise SubmissionFailure("; ".join(problems))

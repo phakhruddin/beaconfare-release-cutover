@@ -43,9 +43,14 @@ controller driven by `BEACONFARE_RELEASE`, a `destroy.sh`, and a manifest.
 | **ECS task definitions** | One per color × release. The emulator does not echo container definitions back, so they sit under `ignore_changes`; a release therefore selects its own definition instead of mutating one. | ECS services |
 | **DynamoDB** (quotes table, TTL on `expires_at`) | Durable store shared by both colors and every release. Proves quotes written during a cutover survive it and that the self-test's storage round trip works. | Every task |
 | **IAM** (execution role, task role) | Execution role ships logs only; one task role for every release with four DynamoDB actions on the quotes table only. Declaration-checked. | ECS task definitions |
-| **CloudWatch Logs** | API log group with the configured retention; every task definition uses `awslogs`. | ECS task definitions |
+| **CloudWatch Logs** | One `/ecs/<family>` group per task definition family with the configured retention. The endpoint always writes container output there and auto-creates the group if missing, so an unmanaged one leaks past destroy. | ECS task definitions |
 
 Emulator facts the design rests on (all published in `runtime.md`):
+Terraform updates to an existing service's `desired_count` are not applied
+(created counts and CLI `update-service --desired-count` are), so capacity
+belongs to the release controller while Terraform owns everything else —
+the same split real teams use when something outside Terraform scales a
+service;
 ECS deployments are simplified — no circuit breaker, no min/max percent, no
 automatic rollback — so the safety net has to be built by the model, not
 configured; each listener port is its own socket on the endpoint host;
@@ -123,7 +128,23 @@ agrees with the last run. Leftover release state without Terraform state
 
 ## Score
 
-Eleven obligations, 100 points. Only 100 passes.
+Twelve obligations, 100 points. Only 100 passes.
+
+### Calibration history
+
+Task v3 passed 4 of 5 scored panel runs with no false results: the release
+algorithm was fully specified and nothing in the environment punished a
+shallow implementation of it. v4 adds two fully published requirements that
+real release controllers must get right:
+
+- **Warm-up.** Every release image warms up for a randomized 30–55 s after
+  start (fixed per environment, not published). Until then `/health/ready`,
+  `/release/selftest` and `POST /quotes` answer `503 warming_up`, which the
+  contract states is not a verdict. Gating on "tasks running" or reading the
+  first non-200 self-test as a failure rejects a correct release.
+- **Recorded state is the truth.** Operators can change listeners and task
+  counts out of band; a no-release deploy restores the recorded state
+  without failing a request (`lifecycle.drift_restored`).
 
 ### Verified promotion and defective-release rejection — 32
 
@@ -132,33 +153,34 @@ Eleven obligations, 100 points. Only 100 passes.
 | `lifecycle.zero_downtime_promotion` | 16 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
 | `lifecycle.defective_release_rejected` | 16 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. |
 
-### Instant rollback, repair and stable state — 20
+### Instant rollback, drift and repair, stable state — 28
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
 | `lifecycle.instant_rollback` | 10 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
+| `lifecycle.drift_restored` | 8 | With a warm pair, the verifier swaps the two listeners and scales the standby to 1 task outside `deploy.sh` (and first proves production now serves the standby release). A no-release deploy must put production and preview back on the **recorded** colors and the standby back to its recorded count, with zero failed requests and live tasks untouched. A controller that reads "which color is live" from the listeners adopts the drift. |
 | `lifecycle.repair_without_disruption` | 6 | Preview listener and standby service are deleted; a no-release deploy restores both, preview forwards to standby, no production request fails, no live task is replaced. |
 | `lifecycle.reapply_stable` | 4 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
 
-### Blue/green topology — 18
+### Blue/green topology — 14
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `declared.release_topology` | 8 | In state: both listeners on the configured ports, each forwarding to exactly one, different color TG; both TGs `ip`/8080/`/health/ready`; both services private, no public IP, own TG; their task definitions use a supplied image and the right `DEPLOYMENT_COLOR`. |
-| `realized.initial_release` | 10 | Live: production→one color, preview→the other; live color has N healthy targets and N running tasks, standby 0; every production response is initial/live color from >1 task; manifest says `initial`. |
+| `declared.release_topology` | 6 | In state: both listeners on the configured ports, each forwarding to exactly one, different color TG; both TGs `ip` with `/health/ready`; both services private, no public IP, own TG; their task definitions use a supplied image and the right `DEPLOYMENT_COLOR`. |
+| `realized.initial_release` | 8 | Live: production→one color, preview→the other; live color has N healthy targets and N running tasks, standby 0; every production response is initial/live color from >1 task; manifest says `initial`. |
 
-### Product traffic — 10
+### Product traffic — 6
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `observed.quotes_roundtrip` | 10 | Fresh quotes are priced by the published rule, read back with the same fare and `priced_by`, and exist in the manifest's table. |
+| `observed.quotes_roundtrip` | 6 | Fresh quotes are issued by the live release (`priced_by` equals the serving version), read back unchanged, and exist in the manifest's table. Fare values are never asserted: pricing correctness belongs to the release's self-test, not the verifier. |
 
 ### Managed platform and isolation — 12
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
 | `declared.managed_iac` | 4 | Gate. Every scored resource family is in state and the manifest's ARNs resolve to state. |
-| `declared.identity_data_logs` | 8 | Quotes table key/billing/TTL; execution role logs-only; task role four actions on the quotes table only; no wildcards; awslogs to managed groups with exact retention. Declaration only for IAM. |
+| `declared.identity_data_logs` | 8 | Quotes table key/billing/TTL; execution role logs-only; task role four actions on the quotes table only; no wildcards; a managed `/ecs/<family>` group with exact retention for every task definition family (the endpoint ignores `awslogs-group` and writes there). Declaration only for IAM. |
 
 ### Destruction — 8
 
@@ -182,6 +204,8 @@ Eleven obligations, 100 points. Only 100 passes.
 | One `terraform apply` that swaps listeners in the same run it stages the candidate | promotion is unverified; rejection → cap 39 |
 | Change image inside one task definition per color | image change ignored after first apply; promotion never changes version |
 | Redeploy previous release instead of swapping | rollback (new task ARNs) |
+| Gate on running count or treat `503 warming_up` as a failed self-test | promotion (correct release rejected) |
+| Derive the live color from the listeners instead of recorded state | drift (drift adopted) |
 | Release state kept only in memory or a temp file | rollback/repair pick the wrong color; standalone plan shows changes |
 | `-var` flags only inside deploy.sh | standalone plan fails |
 | Destroy by name prefix | legacy decoys deleted → cap 79 |

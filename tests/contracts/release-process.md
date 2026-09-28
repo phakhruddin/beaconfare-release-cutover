@@ -75,6 +75,9 @@ The very first deployment puts `initial_release` live in one color with
 
 ## Verifying a candidate
 
+A candidate is judged only once it is warm: a task still warming up answers
+`503 warming_up` (see `runtime.md`), which is neither a pass nor a failure.
+
 A candidate passes only if **every** candidate task answers
 `GET /release/selftest` with `200` and `"passed": true`, reached through the
 **preview listener**, while the candidate color's target group reports
@@ -87,6 +90,19 @@ you can tell when every task has been covered.
 One of the later releases in `releases` carries a pricing regression. Which
 one is not published and changes between environments. Only its self-test
 reveals it.
+
+## The recorded state is the truth
+
+The release state your deployment records (which color is live, which
+release each color runs, how many tasks each color should run) is the source
+of truth, not whatever the cloud happens to show. Listeners, services and
+task counts can be changed outside `deploy.sh`, for example by an operator.
+A run with no release requested puts everything back to the recorded state:
+production forwards to the recorded live color, preview to the recorded
+standby color, and each color runs its recorded release at its recorded task
+count. It does this without failing a production request and without
+stopping or replacing a task of the recorded live color. Its outcome is
+`unchanged`.
 
 ## Production during a release
 

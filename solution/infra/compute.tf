@@ -6,7 +6,7 @@ resource "aws_ecs_cluster" "main" {
 resource "aws_ecs_task_definition" "api" {
   for_each = local.task_definitions
 
-  family                   = "${local.prefix}-${each.value.color}-${replace(each.value.version, ".", "-")}"
+  family                   = local.families[each.key]
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "256"
@@ -26,14 +26,15 @@ resource "aws_ecs_task_definition" "api" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.api.name
+        "awslogs-group"         = aws_cloudwatch_log_group.api[each.key].name
         "awslogs-region"        = var.region
         "awslogs-stream-prefix" = each.value.color
       }
     }
   }])
 
-  tags = merge(local.tags, { Release = each.value.version, Color = each.value.color })
+  # Task definition tags are not stored by this endpoint; declaring them
+  # would plan an update on every run.
 
   # The endpoint returns container definitions in a different shape than
   # registered (contracts/runtime.md). Each release has its own definition,
@@ -68,7 +69,11 @@ resource "aws_ecs_service" "color" {
   scheduling_strategy = "REPLICA"
   tags                = merge(local.tags, { Color = each.key })
 
+  # desired_count is the initial capacity only. This endpoint does not apply
+  # a Terraform update to an existing service's desired count, so the
+  # release controller (deploy.sh) owns capacity after creation through
+  # UpdateService, the usual split for a service scaled outside Terraform.
   lifecycle {
-    ignore_changes = [scheduling_strategy]
+    ignore_changes = [scheduling_strategy, desired_count]
   }
 }
