@@ -119,11 +119,17 @@ def _failure_result(identifier: str, exc: BaseException, duration: float) -> Che
                        duration_seconds=duration, details=details)
 
 
+def _arm(seconds: int) -> None:
+    """Arm SIGALRM with a bounded, positive whole number of seconds."""
+    signal.alarm(max(1, min(int(seconds), 86400)))
+
+
 class TrialSession:
     def __init__(self) -> None:
         self.spec = load_obligations(SPEC_PATH)
         self._deadlines = {item["id"]: int(item.get("deadline_seconds", 900))
                            for item in self.spec["obligations"]}
+        self._armed_seconds = 0
         self.results: list[CheckResult] = []
         self._context: TrialContext | None = None
         self._setup_error: BaseException | None = None
@@ -137,7 +143,10 @@ class TrialSession:
         if self._context is None:
             # Shared setup runs the first deploy.sh under its own budget; the
             # obligation's deadline clock starts again once setup is done.
-            pending = signal.alarm(0)
+            # The value alarm(0) returns is not trusted (it is not a small
+            # remaining-seconds count on every runtime); re-arm from the
+            # deadline this obligation armed itself.
+            signal.alarm(0)
             try:
                 self._context = self._prepare()
             except BaseException as exc:  # noqa: BLE001 - remembered, then re-raised
@@ -146,8 +155,8 @@ class TrialSession:
                 self._setup_error = exc
                 raise
             finally:
-                if pending:
-                    signal.alarm(pending)
+                if self._armed_seconds:
+                    _arm(self._armed_seconds)
         return self._context
 
     def _prepare(self) -> TrialContext:
@@ -210,12 +219,14 @@ class TrialSession:
             raise HarnessError(f"verifier step {identifier} exceeded {deadline}s without finishing")
 
         previous = signal.signal(signal.SIGALRM, _expired)
-        signal.alarm(deadline)
+        self._armed_seconds = deadline
+        _arm(deadline)
         self._progress(f"start {identifier} (deadline {deadline}s)")
         try:
             self._run(identifier, check)
         finally:
             signal.alarm(0)
+            self._armed_seconds = 0
             signal.signal(signal.SIGALRM, previous)
             outcome = self.results[-1].outcome.value if self.results and \
                 self.results[-1].obligation_id == identifier else "unrecorded"
