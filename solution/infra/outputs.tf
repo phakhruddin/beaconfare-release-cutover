@@ -22,3 +22,5 @@ output "live_color" { value = var.live_color }
 output "standby_color" { value = local.standby_color }
 output "color_release" { value = local.color_release }
 output "color_count" { value = local.color_count }
+output "lock_table_name" { value = aws_dynamodb_table.release_lock.name }
+output "lock_table_arn" { value = aws_dynamodb_table.release_lock.arn }

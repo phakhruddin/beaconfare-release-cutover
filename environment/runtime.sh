@@ -44,6 +44,8 @@ resource_prefix="bf-$(rand 5)"
 desired=$(( 0x$(rand 1) % 2 + 2 ))
 retention_choices="1 3 5 7 14"
 retention=$(echo $retention_choices | cut -d' ' -f$(( 0x$(rand 1) % 5 + 1 )))
+# Longer than the 720-second deploy budget, so a held lease never lapses mid-run.
+lease=$(( 0x$(rand 1) % 301 + 900 ))
 config_tmp="$CONFIG_DIR/config.json.tmp"
 
 cat >"$config_tmp" <<JSON
@@ -60,7 +62,8 @@ cat >"$config_tmp" <<JSON
   "api_desired_count": $desired,
   "production_listener_port": 80,
   "preview_listener_port": 8081,
-  "log_retention_days": $retention
+  "log_retention_days": $retention,
+  "lock_lease_seconds": $lease
 }
 JSON
 

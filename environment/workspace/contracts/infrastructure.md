@@ -25,12 +25,12 @@ settings and relationships for that resource.
 | Contract | Responsibility |
 |---|---|
 | [`release-process.md`](release-process.md) | Colors, release requests, verification, promotion, rollback, rejection. **The product contract.** |
-| [`execution-guide.md`](execution-guide.md) | Non-normative implementation sequence and focused diagnostics |
+| [`release-lock.md`](release-lock.md) | The exclusive release lock every `deploy.sh` run takes, respects and releases |
 | [`runtime.md`](runtime.md) | The release images, their environment and the endpoint behavior that affects deployment |
 | [`services/vpc.md`](services/vpc.md) | VPC, subnets, routing and security groups |
 | [`services/alb.md`](services/alb.md) | Load balancer, both listeners, both target groups |
 | [`services/ecs.md`](services/ecs.md) | Cluster, color services, task definitions, readiness |
-| [`services/dynamodb.md`](services/dynamodb.md) | Quotes table |
+| [`services/dynamodb.md`](services/dynamodb.md) | Quotes table and release lock table |
 | [`services/iam.md`](services/iam.md) | Role separation and least privilege |
 | [`services/cloudwatch-logs.md`](services/cloudwatch-logs.md) | Log groups and retention |
 

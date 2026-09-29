@@ -128,7 +128,7 @@ agrees with the last run. Leftover release state without Terraform state
 
 ## Score
 
-Twelve obligations, 100 points. Only 100 passes.
+Thirteen obligations, 100 points. Only 100 passes.
 
 ### Calibration history
 
@@ -146,41 +146,65 @@ real release controllers must get right:
   counts out of band; a no-release deploy restores the recorded state
   without failing a request (`lifecycle.drift_restored`).
 
-### Verified promotion and defective-release rejection — 32
+Realm task version 3 (v0.6.0, git tag `realm-task-v3-0.6.0`) still swept the
+panel: non-Astra 100s from Gemini ×2, GPT 5.6 ×1 and Opus ×1, with the other
+runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
+
+- **The contract handed over the reference controller.** A public
+  `execution-guide.md` spelled out the reference's phase machine step by
+  step (record file, count restore, listener read-back, proof loop, rejection
+  path). Every normative fact in it is also stated in `release-process.md`,
+  `runtime.md` or `services/iam.md`, so it was removed without creating a
+  hidden requirement. The model now designs the controller from the rules.
+- **No concurrency control.** Real release controllers serialize. v0.7.0
+  adds a published exclusive release lock (`release-lock.md`): a DynamoDB
+  lease taken before any change, respected (exit `75`, nothing changed)
+  while another holder's lease is live, taken over when expired, held for the
+  run and released on every exit (`lifecycle.exclusive_release_lock`). The
+  verifier plants the lease rows itself, so the test runs no concurrent
+  deploys and has no timing race.
+
+### Verified promotion and defective-release rejection — 28
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.zero_downtime_promotion` | 16 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
-| `lifecycle.defective_release_rejected` | 16 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. A later correct release must then stage from that zero-capacity color, pass proof, and promote without replacing the original live tasks. |
+| `lifecycle.zero_downtime_promotion` | 14 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
+| `lifecycle.defective_release_rejected` | 14 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. A later correct release must then stage from that zero-capacity color, pass proof, and promote without replacing the original live tasks. |
 
-### Instant rollback, drift and repair, stable state — 28
+### Exclusive release lock — 12
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.instant_rollback` | 10 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
+| `lifecycle.exclusive_release_lock` | 12 | No lock item is left by earlier runs. The verifier plants an **expired** lease (holder `crashed-controller`) and requests the defective release under traffic: the run must replace it with one lease of its own (`lease_expires_at` = acquisition + `lock_lease_seconds`), hold it for the whole run, reject the candidate, and delete its lock at the end. Then it plants a **live** lease (holder `operator-maintenance`) and requests a candidate: `deploy.sh` must exit `75` within 60 s having changed no submission file, no routing and no task, and leaving the foreign lock byte-for-byte intact. |
+
+### Instant rollback, drift and repair, stable state — 24
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `lifecycle.instant_rollback` | 8 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
 | `lifecycle.drift_restored` | 8 | With a warm pair, the verifier swaps the two listeners and scales the standby to 1 task outside `deploy.sh` (and first proves production now serves the standby release). A no-release deploy must put production and preview back on the **recorded** colors and the standby back to its recorded count, with zero failed requests and live tasks untouched. A controller that reads "which color is live" from the listeners adopts the drift. |
-| `lifecycle.repair_without_disruption` | 6 | Preview listener and standby service are deleted; a no-release deploy restores both, preview forwards to standby, no production request fails, no live task is replaced. |
-| `lifecycle.reapply_stable` | 4 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
+| `lifecycle.repair_without_disruption` | 5 | Preview listener and standby service are deleted; a no-release deploy restores both, preview forwards to standby, no production request fails, no live task is replaced. |
+| `lifecycle.reapply_stable` | 3 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
 
-### Blue/green topology — 14
-
-| Obligation | Pts | What it proves |
-|---|---:|---|
-| `declared.release_topology` | 6 | In state: both listeners on the configured ports, each forwarding to exactly one, different color TG; both TGs `ip` with `/health/ready`; both services private, no public IP, own TG; their task definitions use a supplied image and the right `DEPLOYMENT_COLOR`. |
-| `realized.initial_release` | 8 | Live: production→one color, preview→the other; live color has N healthy targets and N running tasks, standby 0; every production response is initial/live color from >1 task; manifest says `initial`. |
-
-### Product traffic — 6
+### Blue/green topology — 12
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `observed.quotes_roundtrip` | 6 | Fresh quotes are issued by the live release (`priced_by` equals the serving version), read back unchanged, and exist in the manifest's table. Fare values are never asserted: pricing correctness belongs to the release's self-test, not the verifier. |
+| `declared.release_topology` | 5 | In state: both listeners on the configured ports, each forwarding to exactly one, different color TG; both TGs `ip` with `/health/ready`; both services private, no public IP, own TG; their task definitions use a supplied image and the right `DEPLOYMENT_COLOR`. |
+| `realized.initial_release` | 7 | Live: production→one color, preview→the other; live color has N healthy targets and N running tasks, standby 0; every production response is initial/live color from >1 task; manifest says `initial`. |
 
-### Managed platform and isolation — 12
+### Product traffic — 5
+
+| Obligation | Pts | What it proves |
+|---|---:|---|
+| `observed.quotes_roundtrip` | 5 | Fresh quotes are issued by the live release (`priced_by` equals the serving version), read back unchanged, and exist in the manifest's table. Fare values are never asserted: pricing correctness belongs to the release's self-test, not the verifier. |
+
+### Managed platform and isolation — 11
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
 | `declared.managed_iac` | 4 | Gate. Every scored resource family is in state and the manifest's ARNs resolve to state. |
-| `declared.identity_data_logs` | 8 | Quotes table key/billing/TTL; execution role logs-only; task role four actions on the quotes table only; no wildcards; a managed `/ecs/<family>` group with exact retention for every task definition family (the endpoint ignores `awslogs-group` and writes there). Declaration only for IAM. |
+| `declared.identity_data_logs` | 7 | Quotes table key/billing/TTL; release lock table `<prefix>-release-lock` keyed on `lock_id` (S), on-demand; execution role logs-only; task role four actions on the quotes table only; no wildcards; a managed `/ecs/<family>` group with exact retention for every task definition family (the endpoint ignores `awslogs-group` and writes there). Declaration only for IAM. |
 
 ### Destruction — 8
 
@@ -206,6 +230,9 @@ real release controllers must get right:
 | Redeploy previous release instead of swapping | rollback (new task ARNs) |
 | Gate on running count or treat `503 warming_up` as a failed self-test | promotion (correct release rejected) |
 | Derive the live color from the listeners instead of recorded state | drift (drift adopted) |
+| Ignore the release lock, or check it only after `terraform apply` | lock (a live lease does not stop the run) |
+| Treat any existing lock item as held, or delete a foreign lock | lock (an expired lease is not taken over, or the operator's lease is destroyed) |
+| Acquire the lock but never release it on rejection | lock (lock left behind) |
 | Release state kept only in memory or a temp file | rollback/repair pick the wrong color; standalone plan shows changes |
 | `-var` flags only inside deploy.sh | standalone plan fails |
 | Destroy by name prefix | legacy decoys deleted → cap 79 |

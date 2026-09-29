@@ -47,6 +47,9 @@ Traps that carry the difficulty:
 9. **Rejection is recoverable.** An unready or defective candidate is rejected
    successfully; the next healthy candidate must stage from its zero-capacity
    color and still complete a verified promotion.
+10. **Serialize the controller.** A DynamoDB lease (`release-lock.md`) is
+    taken before any change, respected with exit `75` while another holder's
+    lease is live, taken over when expired, and released on every exit.
 
 ## Layout
 
@@ -56,7 +59,7 @@ Traps that carry the difficulty:
 | `reasoning.md` | Design, flows and score rationale for reviewers. |
 | `environment/` | Agent workspace image, supplied release images, public contracts. `runtime.sh` also starts one idle `release-keeper` container per release image (labelled into the compose project, removed by `down --remove-orphans`) so no release image can be removed from the shared Docker daemon before it is deployed. |
 | `environment/workspace/contracts/release-process.md` | The product contract. |
-| `environment/workspace/contracts/execution-guide.md` | Public, non-normative implementation sequence and focused diagnostics. |
+| `environment/workspace/contracts/release-lock.md` | The exclusive release lock every `deploy.sh` run takes, respects (exit 75) and releases. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |
 | `tests/` | Verifier image and the weighted obligation suite. `tests/application` and `tests/contracts` mirror `environment/`, because Realm uploads only `tests/` as the verifier context. Keep them in sync. |
 | `scripts/diagnose-floci-scaling.sh` | Author-only diagnostic: probes how the pinned Floci image scales ECS services from zero. Not part of the agent or verifier environment. |

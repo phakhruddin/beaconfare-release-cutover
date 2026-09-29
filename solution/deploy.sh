@@ -17,7 +17,8 @@ INFRA_DIR="${SCRIPT_DIR}/infra"
 STATE_FILE="${INFRA_DIR}/release.auto.tfvars.json"
 MANIFEST_PATH="${SCRIPT_DIR}/manifest.json"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+LOCK_HELD=false
+trap 'declare -F release_lock >/dev/null && release_lock; rm -rf "$WORK"' EXIT
 
 log() { echo "[deploy] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -38,6 +39,57 @@ export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
 export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
 export AWS_DEFAULT_REGION="$REGION" AWS_REGION="$REGION" AWS_PAGER=""
 AWSCLI=(aws --endpoint-url "$AWS_ENDPOINT_URL" --region "$REGION")
+
+# ---- release lock (contracts/release-lock.md) ----------------------------------
+# Taken before any change; a live lease held by anyone else means exit 75
+# having changed nothing. Released on every exit through the EXIT trap.
+LOCK_TABLE="${RESOURCE_PREFIX}-release-lock"
+LOCK_LEASE=$(cfg '.lock_lease_seconds')
+HOLDER="deploy-$(date +%s)-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+LOCK_KEY='{"lock_id":{"S":"release-controller"}}'
+
+lock_table_exists() {
+  "${AWSCLI[@]}" dynamodb describe-table --table-name "$LOCK_TABLE" >/dev/null 2>&1
+}
+
+acquire_lock() {
+  local now expires
+  now=$(date +%s); expires=$(( now + LOCK_LEASE ))
+  if "${AWSCLI[@]}" dynamodb put-item --table-name "$LOCK_TABLE" \
+       --item "{\"lock_id\":{\"S\":\"release-controller\"},\"holder\":{\"S\":\"$HOLDER\"},\"lease_expires_at\":{\"N\":\"$expires\"}}" \
+       --condition-expression "attribute_not_exists(lock_id) OR lease_expires_at < :now" \
+       --expression-attribute-values "{\":now\":{\"N\":\"$now\"}}" 2>"$WORK/lock.err"; then
+    LOCK_HELD=true
+    log "release lock acquired as $HOLDER (lease until $expires)"
+    return 0
+  fi
+  if grep -q ConditionalCheckFailed "$WORK/lock.err"; then
+    local current
+    current=$("${AWSCLI[@]}" dynamodb get-item --table-name "$LOCK_TABLE" --key "$LOCK_KEY" \
+              --consistent-read --output json 2>/dev/null | jq -c '.Item // {}' || echo '{}')
+    log "release lock is held with a live lease: $current; refusing to act"
+    exit 75
+  fi
+  die "could not take the release lock: $(head -c 400 "$WORK/lock.err")"
+}
+
+release_lock() {
+  "$LOCK_HELD" || return 0
+  LOCK_HELD=false
+  if "${AWSCLI[@]}" dynamodb delete-item --table-name "$LOCK_TABLE" --key "$LOCK_KEY" \
+       --condition-expression "holder = :h" \
+       --expression-attribute-values "{\":h\":{\"S\":\"$HOLDER\"}}" >/dev/null 2>&1; then
+    log "release lock released"
+  else
+    log "release lock was no longer ours; left it alone"
+  fi
+}
+
+if lock_table_exists; then
+  acquire_lock
+else
+  log "no lock table yet (first deployment): it is created by the first apply"
+fi
 
 # ---- inputs -------------------------------------------------------------------
 jq '{region, aws_endpoint_url, resource_prefix, api_desired_count,
@@ -227,6 +279,7 @@ EDGE_HOST=$(tf_out edge_dns_name)
 CLUSTER=$(tf_out cluster_arn)
 TG_ARNS=$(tf_json target_group_arns)
 SERVICE_ARNS=$(tf_json service_arns)
+"$LOCK_HELD" || acquire_lock
 scale_colors
 
 STANDBY_COLOR=$(other "$LIVE_COLOR")
@@ -299,6 +352,8 @@ jq -n \
   --argjson target_groups "$TG_ARNS" \
   --arg table "$(tf_out quotes_table_name)" \
   --arg table_arn "$(tf_out quotes_table_arn)" \
+  --arg lock_table "$(tf_out lock_table_name)" \
+  --arg lock_table_arn "$(tf_out lock_table_arn)" \
   --arg exec_role "$(tf_out execution_role_arn)" \
   --arg task_role "$(tf_out task_role_arn)" \
   --argjson log_groups "$(tf_json log_groups)" \
@@ -312,7 +367,8 @@ jq -n \
            production_listener_arn: $prod_arn, production_url: $prod_url,
            preview_listener_arn: $preview_arn, preview_url: $preview_url},
     compute: {cluster_arn: $cluster_arn, services: $services, target_groups: $target_groups},
-    data: {quotes_table: {name: $table, arn: $table_arn}},
+    data: {quotes_table: {name: $table, arn: $table_arn},
+           lock_table: {name: $lock_table, arn: $lock_table_arn}},
     roles: {execution_role_arn: $exec_role, task_role_arn: $task_role},
     logs: {groups: $log_groups},
     release: {live_version: $live_version, live_color: $live_color,

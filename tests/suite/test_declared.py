@@ -26,7 +26,7 @@ REQUIRED_TYPES = {
     "aws_ecs_service": 2,
     "aws_ecs_task_definition": 2,
     "aws_iam_role": 2,
-    "aws_dynamodb_table": 1,
+    "aws_dynamodb_table": 2,
     "aws_cloudwatch_log_group": 1,
 }
 
@@ -135,8 +135,9 @@ def test_infrastructure_is_managed(trial: TrialContext) -> CheckResult:
                {v.get("arn") for v in _values(state_json, "aws_ecs_service")}
     absent += [a for a in manifest["compute"]["services"].values() if a not in services]
     tables = {v.get("name") for v in _values(state_json, "aws_dynamodb_table")}
-    if trial.quotes_table not in tables:
-        absent.append(trial.quotes_table)
+    for name in (trial.quotes_table, trial.manifest["data"]["lock_table"]["name"]):
+        if name not in tables:
+            absent.append(name)
     if absent:
         raise SubmissionFailure(f"resources named in the manifest are not managed in state: {absent}")
     return CheckResult(
@@ -254,6 +255,25 @@ def test_identity_data_logs(trial: TrialContext) -> CheckResult:
     ttl = _one(table.get("ttl"))
     if not ttl.get("enabled") or ttl.get("attribute_name") != "expires_at":
         problems.append(f"the quotes table TTL is {ttl or 'absent'}")
+
+    lock = next((t for t in _values(state_json, "aws_dynamodb_table")
+                 if t.get("name") == trial.config.lock_table), None)
+    if lock is None:
+        problems.append(f"the release lock table {trial.config.lock_table} is not managed in state")
+    else:
+        lock_hash = lock.get("hash_key")
+        for entry in lock.get("key_schema") or []:
+            if (entry.get("key_type") or "").upper() == "HASH":
+                lock_hash = lock_hash or entry.get("attribute_name")
+        if lock_hash != "lock_id" or lock.get("range_key"):
+            problems.append(f"the lock table key is {lock_hash}/{lock.get('range_key')}, expected lock_id only")
+        if {a.get("name"): a.get("type") for a in lock.get("attribute") or []}.get("lock_id") != "S":
+            problems.append("lock_id is not declared as S")
+        if lock.get("billing_mode") != "PAY_PER_REQUEST":
+            problems.append(f"the lock table billing mode is {lock.get('billing_mode')!r}")
+    if trial.manifest["data"]["lock_table"]["name"] != trial.config.lock_table:
+        problems.append(f"manifest.data.lock_table.name is {trial.manifest['data']['lock_table']['name']!r}, "
+                        f"expected {trial.config.lock_table!r}")
 
     roles = {r.get("arn"): r for r in _values(state_json, "aws_iam_role")}
     table_arn = trial.manifest["data"]["quotes_table"]["arn"]

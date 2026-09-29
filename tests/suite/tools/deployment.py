@@ -45,6 +45,31 @@ def _capture(logs_dir: Path, label: str, output: bytes) -> None:
     (logs_dir / f"{label}.txt").write_bytes(output[-MAX_OUTPUT:])
 
 
+def deploy_raw(submission: Path, logs_dir: Path, label: str, release: str | None = None,
+               timeout: int = DEPLOY_TIMEOUT) -> tuple[int, float]:
+    """Run deploy.sh and return (exit status, seconds) without judging the status.
+
+    Used where a non-zero status is the contracted outcome (a refused run).
+    """
+    import time as _time
+    script = submission / "deploy.sh"
+    if not script.is_file():
+        raise SubmissionFailure("deploy.sh is missing")
+    env = dict(os.environ)
+    env.pop("BEACONFARE_RELEASE", None)
+    if release:
+        env["BEACONFARE_RELEASE"] = release
+    started = _time.monotonic()
+    try:
+        result = subprocess.run([str(script)], cwd=submission, timeout=timeout, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except subprocess.TimeoutExpired as exc:
+        _capture(logs_dir, label, exc.stdout or b"")
+        raise DeadlineExceeded(f"deploy.sh exceeded {timeout}s") from exc
+    _capture(logs_dir, label, result.stdout or b"")
+    return result.returncode, _time.monotonic() - started
+
+
 def deploy(submission: Path, logs_dir: Path, label: str = "deploy", release: str | None = None) -> str:
     return _run(submission / "deploy.sh", submission, DEPLOY_TIMEOUT, label, logs_dir, release)
 

@@ -5,7 +5,7 @@ Create two roles, both assumable by `ecs-tasks.amazonaws.com`:
 | Role | Purpose | May | Must not |
 |---|---|---|---|
 | Execution role | Start supplied local images and ship logs | `logs:CreateLogStream` and `logs:PutLogEvents` on this deployment's `/ecs/<family>` log groups | ECR actions, access to the quotes table, or any other action |
-| Task role | The API's identity, shared by both colors | `DescribeTable`, `GetItem`, `PutItem` and `DeleteItem` on the quotes table | Anything on any other table; any action outside DynamoDB |
+| Task role | The API's identity, shared by both colors | `DescribeTable`, `GetItem`, `PutItem` and `DeleteItem` on the quotes table | Anything on any other table, the release lock table included; any action outside DynamoDB |
 
 No policy may grant `Action: "*"` or a service-wide wildcard such as
 `dynamodb:*`, and no statement may use `Resource: "*"`.

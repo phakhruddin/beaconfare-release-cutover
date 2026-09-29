@@ -72,6 +72,14 @@ class Config:
         return str(self.truth["good_release"])
 
     @property
+    def lock_table(self) -> str:
+        return f"{self.prefix}-release-lock"
+
+    @property
+    def lock_lease_seconds(self) -> int:
+        return int(self.values["lock_lease_seconds"])
+
+    @property
     def legacy_table(self) -> str:
         return f"{self.prefix}-legacy-quotes"
 

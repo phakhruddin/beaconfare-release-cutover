@@ -33,9 +33,9 @@ The contracts are under `/workspace/contracts/`:
   **Read it first.**
 - `runtime.md` defines the images, their environment variables, the
   self-test, and the endpoint behavior that affects deployment.
-- `execution-guide.md` condenses the required controller phases, durable
-  state, and the fastest useful diagnostics. It adds no requirements; use it
-  to avoid rediscovering emulator behavior while implementing.
+- `release-lock.md` defines the exclusive release lock: how every run of
+  `deploy.sh` acquires it, when it must refuse to act (exit `75`) and how it
+  releases it.
 - `infrastructure.md` is the infrastructure index. Its linked files under
   `services/` define the network, load balancer, ECS, DynamoDB, IAM and
   logging requirements.
@@ -98,8 +98,10 @@ Do not modify the contracts or the supplied images.
   `release-process.md`. It must work when no BeaconFare resources exist,
   repair managed resources deleted after a previous deployment, and finish
   only when the deployment is ready as defined in `services/ecs.md`. Rejecting
-  a candidate that fails verification is a successful run. Each run has 720
-  seconds and may produce at most 8 MiB of combined output.
+  a candidate that fails verification is a successful run. Every run takes
+  the release lock from `release-lock.md` before it changes anything; while
+  another holder's lease is live it changes nothing and exits `75`. Each run
+  has 720 seconds and may produce at most 8 MiB of combined output.
 - `destroy.sh` removes only the resources belonging to this deployment and
   must not modify pre-existing resources. It has 900 seconds and may produce
   at most 8 MiB of combined output.
@@ -144,9 +146,12 @@ without going through `deploy.sh`, after the last release.
    without failing a production request.
 7. Rerunning `deploy.sh` with no release requested after managed resources
    were deleted restores them without disturbing production.
-8. A standalone `terraform plan -refresh=false` against `infra/` shows
+8. While another holder's release lock lease is live, `deploy.sh` changes
+   nothing and exits `75`; an expired lease is taken over, and every run
+   releases its own lock when it ends.
+9. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-9. `destroy.sh` removes everything this deployment owns and nothing else.
+10. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -154,11 +159,12 @@ The score is weighted by category. A run passes only at 100.
 
 | Category | Points |
 |---|---:|
-| Verified promotion and defective-release rejection | 32 |
-| Instant rollback, drift and repair, stable state | 28 |
-| Blue/green topology | 14 |
-| Product traffic | 6 |
-| Managed platform and isolation | 12 |
+| Verified promotion and defective-release rejection | 28 |
+| Exclusive release lock | 12 |
+| Instant rollback, drift and repair, stable state | 24 |
+| Blue/green topology | 12 |
+| Product traffic | 5 |
+| Managed platform and isolation | 11 |
 | Destruction | 8 |
 | **Total** | **100** |
 

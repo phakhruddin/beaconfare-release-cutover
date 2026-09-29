@@ -10,7 +10,12 @@ from __future__ import annotations
 import time
 
 from .test_live import live_color, other, sample
-from .tools.deployment import deploy, destroy
+import hashlib
+import threading
+
+import boto3
+
+from .tools.deployment import deploy, deploy_raw, destroy
 from .tools.errors import CleanupLeak, DefectiveServed, HarnessError, SubmissionFailure
 from .tools.results import CheckResult, Outcome
 from .tools.terraform import describe_changes, disruptive_changes, plan
@@ -298,6 +303,137 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
         "lifecycle.defective_release_rejected", Outcome.PASS,
         f"{bad} was rejected; a later {good} release recovered from the zero-capacity standby and promoted",
         details={"requests": report.total + recovery_report.total},
+    )
+
+
+LOCK_KEY = {"lock_id": {"S": "release-controller"}}
+
+
+def _lock_item(client, table: str) -> dict | None:
+    return client.get_item(TableName=table, Key=LOCK_KEY, ConsistentRead=True).get("Item")
+
+
+def _tree_digest(root) -> dict[str, str]:
+    """Content digest of every file in the submission copy."""
+    digests = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            try:
+                digests[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                pass
+    return digests
+
+
+@obligation("lifecycle.exclusive_release_lock")
+def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
+    """The release lock is taken over when stale, held for the run, released, and respected when live."""
+    cfg, cloud = trial.config, trial.cloud
+    table = cfg.lock_table
+    problems: list[str] = []
+    if cloud.table(table) is None:
+        raise SubmissionFailure(f"the release lock table {table} does not exist")
+    leftover = _lock_item(cloud.ddb, table)
+    if leftover:
+        raise SubmissionFailure(f"a lock item is still present after every earlier deploy returned: {leftover}")
+
+    # --- Part 1: an expired lease left by a crashed controller is taken over,
+    # held for the whole run and released when the run ends.
+    color = live_color(trial)
+    live_version = trial.manifest["release"]["live_version"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    cloud.ddb.put_item(TableName=table, Item={
+        "lock_id": {"S": "release-controller"}, "holder": {"S": "crashed-controller"},
+        "lease_expires_at": {"N": str(int(time.time()) - 120)}})
+
+    watcher = boto3.client("dynamodb", region_name=cfg.region, endpoint_url=cfg.endpoint_url)
+    seen: list[tuple[str, int, float]] = []
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.is_set():
+            try:
+                item = _lock_item(watcher, table)
+            except Exception:  # noqa: BLE001 - a missed sample is not a verdict
+                item = None
+            if item:
+                seen.append((item.get("holder", {}).get("S", ""),
+                             int(item.get("lease_expires_at", {}).get("N", "0")), time.time()))
+            stop.wait(0.5)
+
+    started = time.time()
+    thread = threading.Thread(target=watch, daemon=True)
+    thread.start()
+    try:
+        report, failure = release_under_traffic(trial, cfg.defective_release, "deploy-lock-takeover")
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    ended = time.time()
+    if failure:
+        raise failure
+    problems.extend(traffic_problems(report, {live_version}))
+    own = [s for s in seen if s[0] and s[0] != "crashed-controller"]
+    if not own:
+        problems.append("the expired lease was never replaced by a lock held by this run")
+    else:
+        holders = {holder for holder, _, _ in own}
+        if len(holders) > 1:
+            problems.append(f"the lock changed holder during one run: {sorted(holders)}")
+        acquired = min(expires for _, expires, _ in own) - cfg.lock_lease_seconds
+        if not started - 5 <= acquired <= ended + 5:
+            problems.append(f"lease_expires_at is not acquisition + lock_lease_seconds "
+                            f"({cfg.lock_lease_seconds}); implied acquisition at {acquired:.0f}, run {started:.0f}-{ended:.0f}")
+        if own[0][2] - started > 120:
+            problems.append("the lock was taken late in the run instead of before acting")
+    if _lock_item(cloud.ddb, table):
+        problems.append("the run did not release its lock when it ended")
+    release = trial.manifest["release"]
+    if release["last_request"] != {"version": cfg.defective_release, "outcome": "rejected"} \
+            or release["live_version"] != live_version:
+        problems.append(f"the takeover run did not reject the defective candidate: {release}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != live_tasks:
+        problems.append("the takeover run replaced live tasks")
+
+    # --- Part 2: a live lease held by someone else refuses the run: exit 75,
+    # nothing changed, the lock untouched.
+    held = {"lock_id": {"S": "release-controller"}, "holder": {"S": "operator-maintenance"},
+            "lease_expires_at": {"N": str(int(time.time()) + 600)}, "note": {"S": "planned maintenance"}}
+    cloud.ddb.put_item(TableName=table, Item=held)
+    try:
+        routing_before = trial.routing()
+        tasks_before = {c: cloud.running_tasks(trial.cluster, trial.service_arn(c)) for c in ("blue", "green")}
+        tree_before = _tree_digest(trial.config.submission_dir)
+        # The standby color is idle after the rejection, so this request would
+        # stage a candidate if the lock were ignored.
+        status, seconds = deploy_raw(trial.config.submission_dir, trial.config.logs_dir,
+                                     "deploy-lock-refused", release=cfg.initial_release)
+        if status != 75:
+            problems.append(f"while another holder's lease was live, deploy.sh exited {status}, expected 75")
+        if seconds > 60:
+            problems.append(f"the refused run took {seconds:.0f}s, more than 60s")
+        if _tree_digest(trial.config.submission_dir) != tree_before:
+            problems.append("the refused run changed files in the submission directory")
+        if trial.routing() != routing_before:
+            problems.append("the refused run changed listener routing")
+        tasks_after = {c: cloud.running_tasks(trial.cluster, trial.service_arn(c)) for c in ("blue", "green")}
+        if tasks_after != tasks_before:
+            problems.append("the refused run started or stopped tasks")
+        if _lock_item(cloud.ddb, table) != held:
+            problems.append("the refused run modified or removed another holder's lock")
+    finally:
+        try:
+            cloud.ddb.delete_item(TableName=table, Key=LOCK_KEY)
+        except Exception:  # noqa: BLE001
+            pass
+    trial.reload_manifest()
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.exclusive_release_lock", Outcome.PASS,
+        "an expired lease was taken over, held for the run and released; a live lease refused the run with 75 and no change",
+        details={"lock_samples": len(own), "requests": report.total},
     )
 
 
