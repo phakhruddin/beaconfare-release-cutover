@@ -44,6 +44,9 @@ Traps that carry the difficulty:
    randomized 20–35 s after start; a self-test verdict only counts once warm.
 8. **Recorded state wins over drift.** Swapped listeners and a scaled-down
    standby must be restored from the recorded state, not adopted.
+9. **Rejection is recoverable.** An unready or defective candidate is rejected
+   successfully; the next healthy candidate must stage from its zero-capacity
+   color and still complete a verified promotion.
 
 ## Layout
 

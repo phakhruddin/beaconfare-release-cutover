@@ -42,7 +42,11 @@ A reliable `deploy.sh` can follow these phases on every invocation:
    `503 warming_up`; any completed non-passing verdict rejects the candidate.
 7. Promote or roll back by changing the recorded live color and applying the
    listener routing. Reject by recording standby count zero and scaling it
-   down. Finally re-check readiness and write the manifest from real outputs.
+   down. A readiness timeout is an unproven candidate and follows this same
+   rejection path; do not make it a failed deploy. Finally re-check readiness
+   and write the manifest from real outputs. The next valid candidate must
+   stage from that zero-capacity standby rather than inheriting the rejected
+   candidate's outcome.
 
 Terraform must declare every managed resource, but AWS CLI reads and
 `update-service --desired-count` are expected controller operations here.

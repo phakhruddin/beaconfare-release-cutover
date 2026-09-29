@@ -267,12 +267,37 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
             != (live_version, color, None, {"version": bad, "outcome": "rejected"}):
         problems.append(f"the manifest release block is {release}")
 
+    # A rejected candidate leaves the standby color at zero. The next healthy
+    # release must be staged from that state and proven normally; a controller
+    # cannot treat rejection as a terminal/no-op condition.
+    good = cfg.good_release
+    recovery_report, recovery_failure = release_under_traffic(trial, good, "deploy-recover")
+    if recovery_failure:
+        raise recovery_failure
+    problems.extend(traffic_problems(recovery_report, {live_version, good}))
+    if not single_changeover(recovery_report, live_version, good):
+        problems.append(f"recovery promotion switched back to {live_version} after serving {good}")
+    recovery_color = other(color)
+    wrong = serving(trial, trial.production, good, recovery_color, cfg.desired * 6)
+    if wrong:
+        problems.append(f"after recovery production answered {wrong[:4]}, expected {good}/{recovery_color}")
+    wrong = serving(trial, trial.preview, live_version, color, cfg.desired * 6)
+    if wrong:
+        problems.append(f"after recovery preview answered {wrong[:4]}, expected {live_version}/{color}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != tasks:
+        problems.append(f"recovery replaced the original live {color} tasks")
+    recovery = trial.manifest["release"]
+    if (recovery["live_version"], recovery["live_color"], recovery["standby_version"],
+            recovery["last_request"]) != (good, recovery_color, live_version,
+                                             {"version": good, "outcome": "promoted"}):
+        problems.append(f"the recovery manifest release block is {recovery}")
+
     if problems:
         raise SubmissionFailure("; ".join(problems))
     return CheckResult(
         "lifecycle.defective_release_rejected", Outcome.PASS,
-        f"{bad} failed verification and was rejected; production stayed on {live_version} across {report.total} requests",
-        details={"requests": report.total},
+        f"{bad} was rejected; a later {good} release recovered from the zero-capacity standby and promoted",
+        details={"requests": report.total + recovery_report.total},
     )
 
 

@@ -72,10 +72,16 @@ The very first deployment puts `initial_release` live in one color with
    - Verification passed: **promote** R by switching both listeners, so the
      candidate color becomes live and the old live color becomes standby.
      Outcome `promoted`.
-   - Verification failed: **reject** R. Production stays exactly as it was.
-     Scale the candidate color to `0` tasks. `deploy.sh` still exits `0`,
-     because rejecting a bad release is the pipeline working. Outcome
-     `rejected`.
+   - Verification failed, including because the candidate does not become
+     ready before the controller's bounded verification wait: **reject** R.
+     Production stays exactly as it was. Scale the candidate color to `0`
+     tasks. `deploy.sh` still exits `0`, because rejecting an unproven release
+     is the pipeline working. Outcome `rejected`.
+
+A rejection is not terminal release state. A later request for any other
+valid release stages it from the zero-capacity standby color and follows the
+same proof-and-promotion path. A failed candidate must not poison a later
+healthy release or cause a no-op shortcut around its verification.
 
 ## Verifying a candidate
 

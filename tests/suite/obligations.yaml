@@ -213,13 +213,14 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment under continuous production traffic",
-      "when": "deploy runs with the release that carries the pricing regression requested",
+      "when": "deploy runs with the release that carries the pricing regression requested, then a correct later release is requested from the rejected zero-capacity standby",
       "then": [
         "deploy exits successfully",
         "no production response comes from the defective release and none fails",
         "production and its tasks are exactly as before",
         "the standby color runs no tasks afterwards",
-        "the manifest records the rejection"
+        "the manifest records the rejection",
+        "the later correct release is staged from the zero-capacity standby, verified and promoted without replacing the original live tasks"
       ],
       "deadline_seconds": 900
     },

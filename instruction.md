@@ -132,6 +132,10 @@ without going through `deploy.sh`, after the last release.
 4. Requesting the release with the pricing regression ends with it rejected:
    no production request is ever answered by it, production is untouched and
    the candidate color is scaled to zero.
+   A candidate that never becomes ready is rejected the same way; that is a
+   successful pipeline outcome, not a `deploy.sh` failure. A later healthy
+   release must still be able to stage from that zero-capacity color and
+   promote normally.
 5. Quotes written before and during any release stay readable afterwards.
    Every release takes 20–35 seconds to warm up after it starts; a
    candidate is judged and switched in only once it is warm.

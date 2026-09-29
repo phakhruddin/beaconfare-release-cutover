@@ -151,7 +151,7 @@ real release controllers must get right:
 | Obligation | Pts | What it proves |
 |---|---:|---|
 | `lifecycle.zero_downtime_promotion` | 16 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
-| `lifecycle.defective_release_rejected` | 16 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. |
+| `lifecycle.defective_release_rejected` | 16 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. A later correct release must then stage from that zero-capacity color, pass proof, and promote without replacing the original live tasks. |
 
 ### Instant rollback, drift and repair, stable state — 28
 
