@@ -5,8 +5,15 @@ import time
 from typing import Any
 
 import boto3
+from botocore.config import Config as BotoConfig
 
 from .config import Config
+
+# Every verifier call to the endpoint is bounded. Without this botocore waits
+# up to 60 s per attempt with several retries, so one unresponsive call could
+# stall the whole trial silently.
+BOTO_CONFIG = BotoConfig(connect_timeout=5, read_timeout=20,
+                         retries={"max_attempts": 3, "mode": "standard"})
 
 
 class Cloud:
@@ -17,7 +24,8 @@ class Cloud:
     def client(self, service: str):
         if service not in self._clients:
             self._clients[service] = boto3.client(
-                service, region_name=self._config.region, endpoint_url=self._config.endpoint_url)
+                service, region_name=self._config.region, endpoint_url=self._config.endpoint_url,
+                config=BOTO_CONFIG)
         return self._clients[service]
 
     @property

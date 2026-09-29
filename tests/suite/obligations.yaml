@@ -231,7 +231,7 @@
         "the manifest records the rejection",
         "the later correct release is staged from the zero-capacity standby, verified and promoted without replacing the original live tasks"
       ],
-      "deadline_seconds": 900
+      "deadline_seconds": 1800
     },
     {
       "id": "lifecycle.exclusive_release_lock",
@@ -248,7 +248,7 @@
         "with a live foreign lease the run exits 75 within 60 seconds",
         "the refused run changes no submission file, no routing, no task, and leaves the foreign lock untouched"
       ],
-      "deadline_seconds": 1200
+      "deadline_seconds": 1800
     },
     {
       "id": "lifecycle.repair_without_disruption",
@@ -277,7 +277,7 @@
         "the plan resolves every variable without running deploy",
         "no resource is planned for creation or deletion"
       ],
-      "deadline_seconds": 600
+      "deadline_seconds": 900
     },
     {
       "id": "lifecycle.destroy_clean",
@@ -292,7 +292,7 @@
         "no resource carrying this deployment's prefix remains",
         "the pre-existing legacy table, cluster and log group are untouched"
       ],
-      "deadline_seconds": 900
+      "deadline_seconds": 1200
     }
   ]
 }

@@ -8,6 +8,7 @@ dependent obligation as an independent model failure.
 from __future__ import annotations
 
 import json
+import signal
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -121,6 +122,8 @@ def _failure_result(identifier: str, exc: BaseException, duration: float) -> Che
 class TrialSession:
     def __init__(self) -> None:
         self.spec = load_obligations(SPEC_PATH)
+        self._deadlines = {item["id"]: int(item.get("deadline_seconds", 900))
+                           for item in self.spec["obligations"]}
         self.results: list[CheckResult] = []
         self._context: TrialContext | None = None
         self._setup_error: BaseException | None = None
@@ -132,6 +135,9 @@ class TrialSession:
         if self._setup_error is not None:
             raise self._setup_error
         if self._context is None:
+            # Shared setup runs the first deploy.sh under its own budget; the
+            # obligation's deadline clock starts again once setup is done.
+            pending = signal.alarm(0)
             try:
                 self._context = self._prepare()
             except BaseException as exc:  # noqa: BLE001 - remembered, then re-raised
@@ -139,6 +145,9 @@ class TrialSession:
                 # evaluated" instead of each re-running the failed deploy.
                 self._setup_error = exc
                 raise
+            finally:
+                if pending:
+                    signal.alarm(pending)
         return self._context
 
     def _prepare(self) -> TrialContext:
@@ -180,7 +189,39 @@ class TrialSession:
         return context
 
     # -- execution ----------------------------------------------------------
+    def _progress(self, message: str) -> None:
+        """Append one line to progress.log so a stalled step is identifiable."""
+        try:
+            logs = self._config.logs_dir
+            logs.mkdir(parents=True, exist_ok=True)
+            with (logs / "progress.log").open("a", encoding="utf-8") as handle:
+                handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
+        except OSError:
+            pass
+
     def run(self, identifier: str, check: Check) -> None:
+        # Enforce the obligation's published deadline (plus a small margin).
+        # Every submission script already has its own shorter budget, so only
+        # a verifier-side hang can reach this; it is recorded as a harness
+        # error and never as model difficulty.
+        deadline = int(self._deadlines.get(identifier, 900)) + 60
+
+        def _expired(_signum, _frame):
+            raise HarnessError(f"verifier step {identifier} exceeded {deadline}s without finishing")
+
+        previous = signal.signal(signal.SIGALRM, _expired)
+        signal.alarm(deadline)
+        self._progress(f"start {identifier} (deadline {deadline}s)")
+        try:
+            self._run(identifier, check)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+            outcome = self.results[-1].outcome.value if self.results and \
+                self.results[-1].obligation_id == identifier else "unrecorded"
+            self._progress(f"end {identifier}: {outcome}")
+
+    def _run(self, identifier: str, check: Check) -> None:
         started = time.monotonic()
 
         # Shared setup failed, so this obligation was never exercised. Record

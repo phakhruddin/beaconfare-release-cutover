@@ -15,6 +15,7 @@ import threading
 
 import boto3
 
+from .tools.aws import BOTO_CONFIG
 from .tools.deployment import deploy, deploy_raw, destroy
 from .tools.errors import CleanupLeak, DefectiveServed, HarnessError, SubmissionFailure
 from .tools.results import CheckResult, Outcome
@@ -346,7 +347,8 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
         "lock_id": {"S": "release-controller"}, "holder": {"S": "crashed-controller"},
         "lease_expires_at": {"N": str(int(time.time()) - 120)}})
 
-    watcher = boto3.client("dynamodb", region_name=cfg.region, endpoint_url=cfg.endpoint_url)
+    watcher = boto3.client("dynamodb", region_name=cfg.region, endpoint_url=cfg.endpoint_url,
+                           config=BOTO_CONFIG)
     seen: list[tuple[str, int, float]] = []
     stop = threading.Event()
 
