@@ -33,6 +33,9 @@ The contracts are under `/workspace/contracts/`:
   **Read it first.**
 - `runtime.md` defines the images, their environment variables, the
   self-test, and the endpoint behavior that affects deployment.
+- `execution-guide.md` condenses the required controller phases, durable
+  state, and the fastest useful diagnostics. It adds no requirements; use it
+  to avoid rediscovering emulator behavior while implementing.
 - `infrastructure.md` is the infrastructure index. Its linked files under
   `services/` define the network, load balancer, ECS, DynamoDB, IAM and
   logging requirements.
@@ -45,7 +48,12 @@ Other locations:
 - Runtime configuration, the release list and approved image IDs:
   `/workspace/config/config.json`
 - Your deliverable: `/workspace/submission/`
-- You may write diagnostic output under `/workspace/evidence/`.
+- While developing, you may write exploratory diagnostic output under
+  `/workspace/evidence/`; it is writable in both agent and verifier
+  environments. Submission scripts must not hardcode that absolute path for
+  their own runtime logs. Put such logs under a directory resolved from the
+  script's own location (for example, `"$SCRIPT_DIR/evidence"`) so they remain
+  writable after Harbor copies the submission.
 
 Configure the AWS provider, and every AWS CLI or SDK call you make, with
 `aws_endpoint_url` and `region` from `/workspace/config/config.json`. Use the
@@ -65,9 +73,11 @@ repeatedly, in that same copy, with a different `BEACONFARE_RELEASE` each
 time. Terraform state files and `config.auto.tfvars.json` are not handed over;
 everything else you leave in `submission/` is, so the first verifier run
 must not mistake leftovers from your own testing for a live deployment.
-Resolve paths **relative to your own script**. A hardcoded
-`/workspace/submission/...` breaks after the copy. The one path that never
-moves is the runtime configuration: always read it at
+Resolve every submission-owned path, including state, manifests, temporary
+files and persistent logs, **relative to your own script**. Hardcoded
+`/workspace/submission/...` and `/workspace/evidence/...` paths break after
+the copy or can target a volume your script does not own. The one path that
+never moves is the runtime configuration: always read it at
 `/workspace/config/config.json`.
 
 Do not modify the contracts or the supplied images.
@@ -123,7 +133,7 @@ without going through `deploy.sh`, after the last release.
    no production request is ever answered by it, production is untouched and
    the candidate color is scaled to zero.
 5. Quotes written before and during any release stay readable afterwards.
-   Every release takes tens of seconds to warm up after it starts; a
+   Every release takes 20–35 seconds to warm up after it starts; a
    candidate is judged and switched in only once it is warm.
 6. If listeners or task counts are changed outside `deploy.sh`, a run with
    no release requested puts them back to your recorded release state

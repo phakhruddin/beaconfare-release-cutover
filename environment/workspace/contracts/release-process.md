@@ -64,7 +64,11 @@ The very first deployment puts `initial_release` live in one color with
    `api_desired_count`. Outcome `rolled_back`.
 3. **Otherwise R is a candidate.** Deploy R into the standby color at
    `api_desired_count` tasks, replacing whatever the standby color ran.
-   Production is not touched while this happens. Then **verify** R (below).
+   Production is not touched while this happens. Explicitly converge and
+   confirm the preview listener's default action on the standby target group
+   before waiting for candidate readiness or calling its self-test; do not
+   assume an earlier listener attachment survived repair or drift. Then
+   **verify** R (below).
    - Verification passed: **promote** R by switching both listeners, so the
      candidate color becomes live and the old live color becomes standby.
      Outcome `promoted`.

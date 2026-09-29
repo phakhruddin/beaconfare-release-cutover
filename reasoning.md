@@ -137,7 +137,7 @@ algorithm was fully specified and nothing in the environment punished a
 shallow implementation of it. v4 adds two fully published requirements that
 real release controllers must get right:
 
-- **Warm-up.** Every release image warms up for a randomized 30–55 s after
+- **Warm-up.** Every release image warms up for a randomized 20–35 s after
   start (fixed per environment, not published). Until then `/health/ready`,
   `/release/selftest` and `POST /quotes` answer `503 warming_up`, which the
   contract states is not a verdict. Gating on "tasks running" or reading the

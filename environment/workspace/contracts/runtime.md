@@ -32,8 +32,8 @@ The HTTP API is in `openapi.yaml`. It listens on `8080`.
   `X-BeaconFare-Color` (the task's `DEPLOYMENT_COLOR`) and
   `X-BeaconFare-Task` (the task's identity).
 - **Warm-up.** Every release loads its pricing cache after the process
-  starts, which takes tens of seconds; the exact time is fixed in the image
-  and is not published. Until it finishes, `/health/ready`,
+  starts, which takes 20–35 seconds. The exact time is fixed in the image
+  but is not published in `config.json`. Until it finishes, `/health/ready`,
   `/release/selftest` and `POST /quotes` answer `503` with code
   `warming_up`. `/health/live` and `GET /release` answer at once.
 - `GET /health/ready` answers `200` when warm-up is over and the quotes table

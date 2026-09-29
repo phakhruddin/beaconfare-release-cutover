@@ -15,7 +15,9 @@ if [ $(( 0x$(rand 1) % 2 )) -eq 0 ]; then defective=3.5.0; else defective=3.6.0;
 
 mkdir -p "$CONFIG_DIR"
 # Every release warms up for this long after start before it is ready.
-warmup=$(( 0x$(rand 1) % 26 + 30 ))
+# Long enough that a controller must distinguish warming from a verdict, but
+# bounded so iterative deploy/test cycles remain practical for agents.
+warmup=$(( 0x$(rand 1) % 16 + 20 ))
 APPLICATION_DIR="$APPLICATION_DIR" DEFECTIVE_VERSION="$defective" WARMUP_SECONDS="$warmup" /bin/sh "$APPLICATION_DIR/build.sh"
 
 # Keep every release image referenced by a running container for the life of

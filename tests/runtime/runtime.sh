@@ -5,6 +5,15 @@
 # at solve time can be replayed here.
 set -eu
 
+# Named volumes are mounted after the verifier image is built, so their root
+# directory does not inherit the ownership established in the Dockerfile.
+# The public contract permits agent diagnostics here; make that promise true
+# in the verifier environment as well.
+if [ -d /evidence ]; then
+  chown -R 10001:10001 /evidence
+  chmod 0775 /evidence
+fi
+
 APPLICATION_DIR="${APPLICATION_DIR:-/application}"
 CONFIG_DIR="${CONFIG_DIR:-/config}"
 PRIVATE_DIR="${PRIVATE_DIR:-/private}"
@@ -17,7 +26,9 @@ if [ $(( 0x$(rand 1) % 2 )) -eq 0 ]; then defective=3.5.0; good=3.6.0; else defe
 
 mkdir -p "$CONFIG_DIR" "$PRIVATE_DIR"
 # Every release warms up for this long after start before it is ready.
-warmup=$(( 0x$(rand 1) % 26 + 30 ))
+# Long enough that a controller must distinguish warming from a verdict, but
+# bounded so iterative deploy/test cycles remain practical for agents.
+warmup=$(( 0x$(rand 1) % 16 + 20 ))
 APPLICATION_DIR="$APPLICATION_DIR" DEFECTIVE_VERSION="$defective" WARMUP_SECONDS="$warmup" /bin/sh "$APPLICATION_DIR/build.sh"
 
 # Keep every release image referenced by a running container for the life of

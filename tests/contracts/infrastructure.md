@@ -25,6 +25,7 @@ settings and relationships for that resource.
 | Contract | Responsibility |
 |---|---|
 | [`release-process.md`](release-process.md) | Colors, release requests, verification, promotion, rollback, rejection. **The product contract.** |
+| [`execution-guide.md`](execution-guide.md) | Non-normative implementation sequence and focused diagnostics |
 | [`runtime.md`](runtime.md) | The release images, their environment and the endpoint behavior that affects deployment |
 | [`services/vpc.md`](services/vpc.md) | VPC, subnets, routing and security groups |
 | [`services/alb.md`](services/alb.md) | Load balancer, both listeners, both target groups |

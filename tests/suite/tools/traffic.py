@@ -53,7 +53,7 @@ class TrafficReport:
 class Traffic:
     """Context manager: steady production traffic until exit."""
 
-    def __init__(self, api: Api, interval: float = 0.15) -> None:
+    def __init__(self, api: Api, interval: float = 0.5) -> None:
         self.api = api
         self.interval = interval
         self.report = TrafficReport()
