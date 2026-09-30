@@ -138,9 +138,10 @@ without going through `deploy.sh`, after the last release.
    successful pipeline outcome, not a `deploy.sh` failure. A later healthy
    release must still be able to stage from that zero-capacity color and
    promote normally.
-5. Quotes written before and during any release stay readable afterwards.
-   Every release takes 20–35 seconds to warm up after it starts; a
-   candidate is judged and switched in only once it is warm.
+5. Quotes written before and during any release stay readable afterwards;
+   quotes issued before a cutover keep their original fare and the release
+   that priced them.  Every release takes 20–35 seconds to warm up after it
+   starts; a candidate is judged and switched in only once it is warm.
 6. If listeners or task counts are changed outside `deploy.sh`, a run with
    no release requested puts them back to your recorded release state
    without failing a production request.

@@ -103,10 +103,22 @@ def test_zero_downtime_promotion(trial: TrialContext) -> CheckResult:
     if len(live_now) != cfg.desired:
         problems.append(f"the live {other(color)} service runs {len(live_now)} tasks, expected {cfg.desired}")
 
-    lost = [q for q in trial.facts.get("quote_ids", []) + trial.facts.get("early_quotes", [])
+    early_quotes = trial.facts.get("early_quotes", [])
+    lost = [q for q in trial.facts.get("quote_ids", [])
             if trial.production.get(f"/quotes/{q}").status != 200]
+    corrupted = []
+    for quote in early_quotes:
+        read = trial.production.get(f"/quotes/{quote['quote_id']}")
+        if read.status != 200:
+            lost.append(quote["quote_id"])
+            continue
+        body = read.json()
+        if (body.get("fare_cents"), body.get("priced_by")) != (quote["fare_cents"], quote["priced_by"]):
+            corrupted.append(quote["quote_id"])
     if lost:
         problems.append(f"{len(lost)} quotes written before or during the release no longer read back")
+    if corrupted:
+        problems.append(f"{len(corrupted)} quotes written before the release changed fare or priced_by after cutover")
 
     release = trial.manifest["release"]
     if (release["live_version"], release["live_color"], release["standby_version"], release["last_request"]["outcome"]) \

@@ -44,7 +44,10 @@ def test_quotes_roundtrip(trial: TrialContext) -> CheckResult:
         if not item:
             raise SubmissionFailure(f"quote {quote['quote_id']} is not in the quotes table named in the manifest")
 
-    trial.facts["early_quotes"] = [q["quote_id"] for q in issued]
+    # Keep the immutable response fields for later lifecycle checks.  A
+    # cutover is not allowed to merely keep a quote addressable: callers must
+    # receive the same price and issuing release after the services swap.
+    trial.facts["early_quotes"] = issued
     return CheckResult(
         "observed.quotes_roundtrip", Outcome.PASS,
         f"{len(issued)} fresh quotes were issued by the live release, stored and read back unchanged",

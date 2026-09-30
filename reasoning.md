@@ -168,7 +168,7 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.zero_downtime_promotion` | 14 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
+| `lifecycle.zero_downtime_promotion` | 14 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back, and quotes issued before the cutover retain their original fare and `priced_by` release. Manifest says `promoted`. |
 | `lifecycle.defective_release_rejected` | 14 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. A later correct release must then stage from that zero-capacity color, pass proof, and promote without replacing the original live tasks. |
 
 ### Controller input and exclusive release lock — 12

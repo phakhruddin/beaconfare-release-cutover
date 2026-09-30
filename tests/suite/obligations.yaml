@@ -179,6 +179,7 @@
         "when deploy returns, production serves only the new release from the other color and preview serves the old release",
         "the previously live tasks are still running, unchanged, as a warm standby",
         "every quote written during the release reads back",
+        "quotes issued before the release keep their original fare and pricing release after cutover",
         "the manifest records the promotion"
       ],
       "deadline_seconds": 900
