@@ -18,7 +18,8 @@
       "label": "Exclusive release lock",
       "weight": 12,
       "obligations": [
-        "lifecycle.exclusive_release_lock"
+        "lifecycle.exclusive_release_lock",
+        "lifecycle.invalid_release_refused"
       ]
     },
     {
@@ -236,7 +237,7 @@
     {
       "id": "lifecycle.exclusive_release_lock",
       "plane": "lifecycle",
-      "weight": 12,
+      "weight": 11,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment and the release lock table from release-lock.md",
@@ -249,6 +250,21 @@
         "the refused run changes no submission file, no routing, no task, and leaves the foreign lock untouched"
       ],
       "deadline_seconds": 1800
+    },
+    {
+      "id": "lifecycle.invalid_release_refused",
+      "plane": "lifecycle",
+      "weight": 1,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a healthy deployment and a version absent from config.json releases",
+      "when": "deploy.sh is invoked with that unknown version while production traffic flows",
+      "then": [
+        "deploy.sh exits non-zero promptly",
+        "the submission tree, manifest, listener routing, task set, and release lock remain unchanged",
+        "production traffic continues without a failed request"
+      ],
+      "deadline_seconds": 120
     },
     {
       "id": "lifecycle.repair_without_disruption",

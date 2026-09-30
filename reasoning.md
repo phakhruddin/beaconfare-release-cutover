@@ -171,11 +171,12 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 | `lifecycle.zero_downtime_promotion` | 14 | Under continuous POST/GET traffic, a correct release is promoted with **zero** failed production requests and a single changeover; afterwards production serves it from the other color, preview serves the old release, and the old live task ARNs are unchanged (warm standby). Quotes written before/during read back. Manifest says `promoted`. |
 | `lifecycle.defective_release_rejected` | 14 | The regression release is requested under traffic. `deploy.sh` exits 0; no production response ever reports it (gate `lifecycle.no_defective_traffic`, cap **39**); live tasks are identical before/after; the candidate color ends at 0 tasks; manifest says `rejected`. A later correct release must then stage from that zero-capacity color, pass proof, and promote without replacing the original live tasks. |
 
-### Exclusive release lock — 12
+### Controller input and exclusive release lock — 12
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.exclusive_release_lock` | 12 | No lock item is left by earlier runs. The verifier plants an **expired** lease (holder `crashed-controller`) and requests the defective release under traffic: the run must replace it with one lease of its own (`lease_expires_at` = acquisition + `lock_lease_seconds`), hold it for the whole run, reject the candidate, and delete its lock at the end. Then it plants a **live** lease (holder `operator-maintenance`) and requests a candidate: `deploy.sh` must exit `75` within 60 s having changed no submission file, no routing and no task, and leaving the foreign lock byte-for-byte intact. |
+| `lifecycle.exclusive_release_lock` | 11 | No lock item is left by earlier runs. The verifier plants an **expired** lease (holder `crashed-controller`) and requests the defective release under traffic: the run must replace it with one lease of its own (`lease_expires_at` = acquisition + `lock_lease_seconds`), hold it for the whole run, reject the candidate, and delete its lock at the end. Then it plants a **live** lease (holder `operator-maintenance`) and requests a candidate: `deploy.sh` must exit `75` within 60 s having changed no submission file, no routing and no task, and leaving the foreign lock byte-for-byte intact. |
+| `lifecycle.invalid_release_refused` | 1 | An unknown `BEACONFARE_RELEASE` is an input error, not a controller run. Under production traffic the verifier requires a prompt non-zero exit with no submission-tree, manifest, routing, task-set, or lock mutation. This executable check enforces the already-published release-process rule that an invalid version changes nothing. |
 
 ### Instant rollback, drift and repair, stable state — 24
 

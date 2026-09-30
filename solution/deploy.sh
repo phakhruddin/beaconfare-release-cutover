@@ -48,6 +48,15 @@ LOCK_LEASE=$(cfg '.lock_lease_seconds')
 HOLDER="deploy-$(date +%s)-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 LOCK_KEY='{"lock_id":{"S":"release-controller"}}'
 
+# An unknown requested version is an input error, not a controller action.
+# Validate it before taking a lock or writing a submission-owned file so a
+# typo cannot disturb routing, tasks, manifests, or another holder's lease.
+REQUESTED_INPUT="${BEACONFARE_RELEASE:-}"
+if [ -n "$REQUESTED_INPUT" ] \
+   && ! jq -e --arg v "$REQUESTED_INPUT" '[.releases[].version] | index($v) != null' "$CONFIG_PATH" >/dev/null; then
+  die "requested release '$REQUESTED_INPUT' is not in config.json releases"
+fi
+
 lock_table_exists() {
   "${AWSCLI[@]}" dynamodb describe-table --table-name "$LOCK_TABLE" >/dev/null 2>&1
 }
@@ -115,10 +124,8 @@ other() { [ "$1" = "blue" ] && echo green || echo blue; }
 
 LIVE_COLOR=$(st '.live_color')
 LIVE_VERSION=$(st ".color_release.${LIVE_COLOR}")
-REQUESTED="${BEACONFARE_RELEASE:-}"
+REQUESTED="$REQUESTED_INPUT"
 [ -n "$REQUESTED" ] || REQUESTED="$LIVE_VERSION"
-jq -e --arg v "$REQUESTED" '[.releases[].version] | index($v) != null' "$CONFIG_PATH" >/dev/null \
-  || die "requested release '$REQUESTED' is not in config.json releases"
 log "prefix=$RESOURCE_PREFIX live=$LIVE_COLOR/$LIVE_VERSION requested=$REQUESTED desired=$DESIRED"
 
 # ---- helpers ----------------------------------------------------------------------

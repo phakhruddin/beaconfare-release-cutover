@@ -439,6 +439,53 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
     )
 
 
+@obligation("lifecycle.invalid_release_refused")
+def test_invalid_release_refused(trial: TrialContext) -> CheckResult:
+    """An unknown release is rejected before it can mutate the deployment."""
+    cfg, cloud = trial.config, trial.cloud
+    invalid = "not-a-beaconfare-release"
+    if any(release.get("version") == invalid for release in cfg.values["releases"]):
+        raise HarnessError(f"chosen invalid release unexpectedly exists: {invalid}")
+
+    routing_before = trial.routing()
+    tasks_before = {color: cloud.running_tasks(trial.cluster, trial.service_arn(color))
+                    for color in ("blue", "green")}
+    tree_before = _tree_digest(cfg.submission_dir)
+    manifest_before = trial.manifest
+    with Traffic(trial.production) as traffic:
+        time.sleep(1)
+        status, seconds = deploy_raw(cfg.submission_dir, cfg.logs_dir, "deploy-invalid-release", release=invalid,
+                                     timeout=90)
+        time.sleep(1)
+    problems = []
+    if status == 0:
+        problems.append("deploy.sh accepted an unknown release")
+    if seconds > 60:
+        problems.append(f"unknown release was not refused promptly ({seconds:.0f}s)")
+    if _tree_digest(cfg.submission_dir) != tree_before:
+        problems.append("refusing an unknown release changed the submission directory")
+    if trial.routing() != routing_before:
+        problems.append("refusing an unknown release changed listener routing")
+    tasks_after = {color: cloud.running_tasks(trial.cluster, trial.service_arn(color))
+                   for color in ("blue", "green")}
+    if tasks_after != tasks_before:
+        problems.append("refusing an unknown release started, stopped, or replaced tasks")
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        problems.append("refusing an unknown release created or changed the release lock")
+    if traffic.report.failures():
+        problems.append(f"production traffic failed while refusing an unknown release: {traffic.report.describe()}")
+    trial.reload_manifest()
+    if trial.manifest != manifest_before:
+        problems.append("refusing an unknown release changed manifest.json")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.invalid_release_refused", Outcome.PASS,
+        "an unknown release exited non-zero before changing files, routing, tasks, manifest, or the release lock",
+        details={"status": status, "seconds": seconds, "requests": traffic.report.total},
+    )
+
+
 @obligation("lifecycle.repair_without_disruption")
 def test_repair_without_disruption(trial: TrialContext) -> CheckResult:
     """Deleted managed resources come back while production keeps serving."""
