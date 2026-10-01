@@ -23,7 +23,8 @@ release, and a release never replaces it: its name is derived from
 | Billing mode | `PAY_PER_REQUEST` |
 
 Declare only the key attribute. How the lock is used is defined in
-[`../release-lock.md`](../release-lock.md). The lock table is used by
+[`../release-lock.md`](../release-lock.md); the same table holds the release
+record defined in [`../release-record.md`](../release-record.md). The lock table is used by
 `deploy.sh`, never by the application.
 
 ## Manifest fields

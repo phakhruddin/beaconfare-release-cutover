@@ -36,6 +36,9 @@ The contracts are under `/workspace/contracts/`:
 - `release-lock.md` defines the exclusive release lock: how every run of
   `deploy.sh` acquires it, when it must refuse to act (exit `75`) and how it
   releases it.
+- `release-record.md` defines the release record: the release state kept in
+  the cloud, which every acting run writes and from which a run on a fresh
+  worker must be able to continue.
 - `infrastructure.md` is the infrastructure index. Its linked files under
   `services/` define the network, load balancer, ECS, DynamoDB, IAM and
   logging requirements.
@@ -118,9 +121,13 @@ Do not modify the contracts or the supplied images.
 
 Persist every dynamic value your configuration needs, including which color
 is live and which release each color runs, into auto-loaded variable files in
-`infra/`, written by `deploy.sh` before `init` and `apply`. Correctness is
-checked by running `terraform plan -refresh=false` directly against `infra/`
-without going through `deploy.sh`, after the last release.
+`infra/`, written by `deploy.sh` before `init` and `apply`. Those files are a
+cache: the release state itself lives in the cloud release record
+(`release-record.md`), and between runs the verifier may replace the
+submission directory with a fresh copy of what you handed over, keeping only
+`infra/terraform.tfstate`. Correctness is checked by running
+`terraform plan -refresh=false` directly against `infra/` without going
+through `deploy.sh`, after the last release.
 
 ## What "done" looks like
 
@@ -155,9 +162,14 @@ without going through `deploy.sh`, after the last release.
 9. An unknown requested release is refused with `64`, before the lock is
    looked at. A refused run changes nothing and repairs nothing, not even
    drift; the next run that is not refused repairs it as usual.
-10. A standalone `terraform plan -refresh=false` against `infra/` shows
+10. Every run that acts writes the cloud release record, whose generation
+    moves by exactly one when the recorded state changes. When the submission
+    directory is replaced by a fresh copy (only Terraform state kept), the
+    next runs continue from the record: nothing serving changes, no task
+    starts or stops, and the warm standby can still be rolled back to.
+11. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-11. `destroy.sh` removes everything this deployment owns and nothing else.
+12. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -165,13 +177,14 @@ The score is weighted by category. A run passes only at 100.
 
 | Category | Points |
 |---|---:|
-| Verified promotion and defective-release rejection | 24 |
-| Exclusive release lock and side-effect-free refusals | 19 |
-| Instant rollback, drift and repair, stable state | 23 |
-| Blue/green topology | 11 |
-| Product traffic | 4 |
-| Managed platform and isolation | 11 |
-| Destruction | 8 |
+| Verified promotion and defective-release rejection | 22 |
+| Exclusive release lock and side-effect-free refusals | 17 |
+| Durable release record and independent recovery | 12 |
+| Instant rollback, drift and repair, stable state | 20 |
+| Blue/green topology | 9 |
+| Product traffic | 3 |
+| Managed platform and isolation | 10 |
+| Destruction | 7 |
 | **Total** | **100** |
 
 Letting a release that failed verification answer production traffic, or

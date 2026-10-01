@@ -114,11 +114,32 @@ if [ ! -s "${INFRA_DIR}/terraform.tfstate" ] \
    || ! jq -e '(.resources // []) | length > 0' "${INFRA_DIR}/terraform.tfstate" >/dev/null 2>&1; then
   rm -f "$STATE_FILE"
 fi
+
+# The cloud release record (contracts/release-record.md) is the source of
+# truth; the local file is only a cache that may be missing or stale (the
+# verifier can hand us a fresh copy with only Terraform state kept).
+RECORD_KEY='{"lock_id":{"S":"release-record"}}'
+PREV_GEN=0
+if "$LOCK_HELD" && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
+  RECORD=$("${AWSCLI[@]}" dynamodb get-item --table-name "$LOCK_TABLE" --key "$RECORD_KEY" \
+             --consistent-read --output json 2>/dev/null | jq -c '.Item // empty' || true)
+  if [ -n "$RECORD" ]; then
+    jq '{live_color: .live_color.S,
+         color_release: {blue: .blue_release.S, green: .green_release.S},
+         color_count: {blue: (.blue_count.N | tonumber), green: (.green_count.N | tonumber)}}' \
+      <<<"$RECORD" > "$STATE_FILE"
+    PREV_GEN=$(jq -r '.generation.N' <<<"$RECORD")
+    log "release state restored from the release record (generation $PREV_GEN)"
+  fi
+fi
+
 if [ ! -s "$STATE_FILE" ]; then
   FIRST_DEPLOY=true
   jq -n --arg r "$INITIAL" --argjson n "$DESIRED" \
     '{live_color: "blue", color_release: {blue: $r, green: $r}, color_count: {blue: $n, green: 0}}' > "$STATE_FILE"
 fi
+
+START_STATE=$(jq -cS . "$STATE_FILE")
 
 st() { jq -r "$1" "$STATE_FILE"; }
 other() { [ "$1" = "blue" ] && echo green || echo blue; }
@@ -343,7 +364,28 @@ else
   STANDBY_REPORTED=""
 fi
 
-# ---- 4. manifest ----------------------------------------------------------------------
+# ---- 4. release record ------------------------------------------------------------------
+# Written once per acting run, while the lock is held. The generation moves
+# by exactly one when the recorded state changed during this run.
+if [ "$PREV_GEN" = "0" ]; then
+  GENERATION=1
+elif [ "$(jq -cS . "$STATE_FILE")" != "$START_STATE" ]; then
+  GENERATION=$(( PREV_GEN + 1 ))
+else
+  GENERATION=$PREV_GEN
+fi
+"$LOCK_HELD" || die "the release lock is not held; refusing to write the release record"
+"${AWSCLI[@]}" dynamodb put-item --table-name "$LOCK_TABLE" --item "$(jq -c \
+    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" '{
+      lock_id: {S: "release-record"}, generation: {N: ($g | tostring)},
+      live_color: {S: .live_color},
+      blue_release: {S: .color_release.blue}, green_release: {S: .color_release.green},
+      blue_count: {N: (.color_count.blue | tostring)}, green_count: {N: (.color_count.green | tostring)},
+      last_request_version: {S: $v}, last_request_outcome: {S: $o}}' "$STATE_FILE")" >/dev/null \
+  || die "could not write the release record"
+log "release record generation $GENERATION written"
+
+# ---- 5. manifest ----------------------------------------------------------------------
 jq -n \
   --arg deployment "$RESOURCE_PREFIX" \
   --arg vpc_id "$(tf_out vpc_id)" \

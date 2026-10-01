@@ -7,7 +7,9 @@ running maintenance, or a second pipeline job, holds the same lock, and
 ## The lock table
 
 Declare a DynamoDB table named exactly `<resource_prefix>-release-lock`
-(see `services/dynamodb.md`). It holds at most one item, the lock:
+(see `services/dynamodb.md`). It holds the release record
+(`lock_id = release-record`, see `release-record.md`) and at most one lock
+item:
 
 | Attribute | Type | Value |
 |---|---|---|

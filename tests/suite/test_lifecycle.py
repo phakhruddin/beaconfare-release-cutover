@@ -11,11 +11,13 @@ import time
 
 from .test_live import live_color, other, sample
 import hashlib
+import shutil
 import threading
 
 import boto3
 
 from .tools.aws import BOTO_CONFIG
+from .tools.config import _writable_copy
 from .tools.deployment import deploy, deploy_raw, destroy
 from .tools.errors import CleanupLeak, DefectiveServed, HarnessError, SubmissionFailure
 from .tools.results import CheckResult, Outcome
@@ -320,6 +322,7 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
 
 
 LOCK_KEY = {"lock_id": {"S": "release-controller"}}
+RECORD_KEY = {"lock_id": {"S": "release-record"}}
 
 
 def _lock_item(client, table: str) -> dict | None:
@@ -466,6 +469,8 @@ def _refusal_snapshot(trial: TrialContext) -> dict:
         "services": services,
         "tree": _tree_digest(trial.config.submission_dir),
         "lock": _lock_item(cloud.ddb, trial.config.lock_table),
+        "record": cloud.ddb.get_item(TableName=trial.config.lock_table, Key=RECORD_KEY,
+                                     ConsistentRead=True).get("Item"),
         "manifest": trial.config.manifest_path.read_bytes() if trial.config.manifest_path.is_file() else b"",
     }
 
@@ -473,6 +478,7 @@ def _refusal_snapshot(trial: TrialContext) -> dict:
 def _diff(before: dict, after: dict) -> list[str]:
     names = {"routing": "listener routing", "services": "an ECS service's desired count or task definition",
              "tree": "files in the submission directory", "lock": "the release lock item",
+             "record": "the release record",
              "manifest": "manifest.json"}
     return [names[key] for key in before if before[key] != after[key]]
 
@@ -578,6 +584,160 @@ def test_refusals_side_effect_free(trial: TrialContext) -> CheckResult:
         "unknown releases (64, checked before the lock) and a live foreign lease (75) were refused within "
         f"{REFUSAL_SECONDS}s with nothing changed or repaired; the next run restored the recorded state",
         details={"requests": report.total},
+    )
+
+
+def _record(trial: TrialContext) -> dict | None:
+    """The release record, decoded; None when absent."""
+    item = trial.cloud.ddb.get_item(TableName=trial.config.lock_table, Key=RECORD_KEY,
+                                    ConsistentRead=True).get("Item")
+    if not item:
+        return None
+    out = {}
+    for key, value in item.items():
+        if "S" in value:
+            out[key] = value["S"]
+        elif "N" in value:
+            try:
+                out[key] = int(value["N"])
+            except ValueError:
+                out[key] = value["N"]
+    return out
+
+
+def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
+    """Check the release record against what is actually deployed."""
+    cfg, cloud = trial.config, trial.cloud
+    record = _record(trial)
+    if record is None:
+        return {}, [f"{label}: there is no release record item (lock_id release-record)"]
+    problems = []
+    required = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
+                "last_request_version", "last_request_outcome")
+    missing = [key for key in required if key not in record]
+    if missing:
+        return record, [f"{label}: the release record lacks {missing}"]
+    if not isinstance(record["generation"], int) or record["generation"] < 1:
+        problems.append(f"{label}: record generation is {record['generation']!r}")
+    routing = trial.routing()
+    if record["live_color"] != routing["production"]:
+        problems.append(f"{label}: record live_color {record['live_color']} but production forwards to "
+                        f"{routing['production']}")
+    for color in ("blue", "green"):
+        count = record[f"{color}_count"]
+        running = cloud.wait_running(trial.cluster, trial.service_arn(color), count, timeout=60) \
+            if isinstance(count, int) else set()
+        if not isinstance(count, int) or len(running) != count:
+            problems.append(f"{label}: record {color}_count {count!r} but {color} runs {len(running)} tasks")
+            continue
+        if count:
+            api = trial.production if color == routing["production"] else trial.preview
+            versions = {r.version for r in sample(api, cfg.desired * 3) if r.status == 200}
+            if versions != {record[f"{color}_release"]}:
+                problems.append(f"{label}: record {color}_release {record[f'{color}_release']} but {color} "
+                                f"serves {sorted(versions)}")
+    last = trial.manifest["release"]["last_request"]
+    if (record["last_request_version"], record["last_request_outcome"]) != (last["version"], last["outcome"]):
+        problems.append(f"{label}: record last request {record['last_request_version']}/"
+                        f"{record['last_request_outcome']} but manifest says {last}")
+    return record, problems
+
+
+def _fresh_worker(trial: TrialContext) -> None:
+    """Replace the submission copy with a fresh one, keeping only Terraform state."""
+    work = trial.config.submission_dir
+    state_path = work / "infra" / "terraform.tfstate"
+    if not state_path.is_file():
+        raise SubmissionFailure("infra/terraform.tfstate does not exist; Terraform state must be local in infra/")
+    state = state_path.read_bytes()
+    shutil.rmtree(work)
+    _writable_copy(trial.config.source_submission, work)
+    (work / "infra").mkdir(parents=True, exist_ok=True)
+    (work / "infra" / "terraform.tfstate").write_bytes(state)
+
+
+@obligation("lifecycle.state_recovered_from_record")
+def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
+    """The cloud release record is accurate and enough to continue on a fresh worker."""
+    cfg, cloud = trial.config, trial.cloud
+    problems: list[str] = []
+    record, found = _record_problems(trial, "before")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    generation = record["generation"]
+
+    # 1. Build a warm standby: promote a known-good release that is not live.
+    color = live_color(trial)
+    standby = other(color)
+    live_version = trial.manifest["release"]["live_version"]
+    target = cfg.initial_release if live_version != cfg.initial_release else cfg.good_release
+    old_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    report, failure = release_under_traffic(trial, target, "deploy-record-promote")
+    if failure:
+        raise failure
+    problems += traffic_problems(report, {live_version, target})
+    if trial.manifest["release"]["last_request"] != {"version": target, "outcome": "promoted"}:
+        raise SubmissionFailure(f"promoting {target} did not succeed: {trial.manifest['release']}")
+    record, found = _record_problems(trial, "after promotion")
+    problems += found
+    if record.get("generation") != generation + 1:
+        problems.append(f"promotion moved the record generation from {generation} to {record.get('generation')}, "
+                        "expected exactly one step")
+    new_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    if warm != old_live_tasks:
+        problems.append(f"the previously live {color} tasks were not kept warm by the promotion")
+
+    # 2. A fresh worker: everything but Terraform state is gone.
+    _fresh_worker(trial)
+
+    # 3. No release requested: nothing serving changes, no task starts or stops.
+    report, failure = release_under_traffic(trial, None, "deploy-record-fresh-worker")
+    if failure:
+        raise failure
+    problems += traffic_problems(report, {target})
+    if trial.manifest["release"]["last_request"] != {"version": target, "outcome": "unchanged"}:
+        problems.append(f"on a fresh worker a no-release run recorded {trial.manifest['release']['last_request']}, "
+                        f"expected {target}/unchanged")
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (standby, color):
+        problems.append(f"on a fresh worker production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}, expected {standby} and {color}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != new_live_tasks:
+        problems.append("on a fresh worker the live tasks were started, stopped or replaced")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != warm:
+        problems.append("on a fresh worker the warm standby tasks were started, stopped or replaced")
+    record, found = _record_problems(trial, "fresh worker")
+    problems += found
+    if record.get("generation") != generation + 1:
+        problems.append(f"a run that changed nothing moved the record generation to {record.get('generation')}, "
+                        f"expected {generation + 1}")
+
+    # 4. The warm standby is still a rollback target, found from the record.
+    report, failure = release_under_traffic(trial, live_version, "deploy-record-rollback")
+    if failure:
+        raise failure
+    problems += traffic_problems(report, {target, live_version})
+    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "rolled_back"}:
+        problems.append(f"after a fresh worker, requesting the warm standby {live_version} recorded "
+                        f"{trial.manifest['release']['last_request']}, expected rolled_back")
+    if trial.routing()["production"] != color:
+        problems.append(f"the rollback did not return production to {color}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != warm:
+        problems.append("the rollback did not reuse exactly the warm standby tasks")
+    record, found = _record_problems(trial, "after rollback")
+    problems += found
+    if record.get("generation") != generation + 2:
+        problems.append(f"the rollback moved the record generation to {record.get('generation')}, "
+                        f"expected {generation + 2}")
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.state_recovered_from_record", Outcome.PASS,
+        f"the release record tracked a promotion (generation {generation}->{generation + 1}); on a fresh worker a "
+        f"no-release run changed nothing and the warm standby {live_version} was rolled back to "
+        f"(generation {generation + 2})",
     )
 
 

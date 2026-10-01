@@ -42,9 +42,10 @@ service uses. Capacity rules:
   *Refusals* below). Matching is exact and case-sensitive: `v3.5.0`,
   ` 3.5.0` or `3.5.0-rc` are not `3.5.0`.
 
-Whatever deployment state you need to remember between runs (which color is
-live, which release each color runs) is your design, but it must survive
-between runs of `deploy.sh` in the same submission directory, and a
+The deployment state you remember between runs (which color is live, which
+release each color runs, how many tasks each color should run) is kept in
+the cloud release record defined in `release-record.md`. Local files may
+cache it, but a run must be able to continue from the record alone, and a
 standalone `terraform plan -refresh=false` against `infra/` must agree with
 what the last run deployed.
 
@@ -66,9 +67,9 @@ A refused run:
 
 - exits within **30 seconds**, with the status above;
 - changes **nothing**: no file in the submission directory (configuration
-  files, Terraform state, the release record and `manifest.json` included),
-  no Terraform or OpenTofu command that writes state, and no AWS write of any
-  kind, the release lock table included;
+  files, Terraform state, any local state cache and `manifest.json`
+  included), no Terraform or OpenTofu command that writes state, and no AWS
+  write of any kind, the release lock table and the release record included;
 - **repairs nothing**, even when the cloud has drifted from the recorded
   release state: swapped listeners stay swapped and wrong task counts stay
   wrong until a run that is not refused puts them back.

@@ -54,6 +54,12 @@ Traps that carry the difficulty:
     lock is read; a live foreign lease exits `75`. Either way the run returns
     within 30 s and changes and repairs nothing, not even drift; the next run
     that is not refused restores the recorded state.
+12. **The release state lives in the cloud.** A release record item in the
+    lock table (`release-record.md`) is written by every acting run, carries a
+    generation that moves by exactly one when the state changes, and is
+    enough on its own: the verifier replaces the submission directory with a
+    fresh copy (only Terraform state kept) and the controller must carry on
+    without starting or stopping a task.
 
 ## Layout
 
@@ -63,6 +69,7 @@ Traps that carry the difficulty:
 | `reasoning.md` | Design, flows and score rationale for reviewers. |
 | `environment/` | Agent workspace image, supplied release images, public contracts. `runtime.sh` also starts one idle `release-keeper` container per release image (labelled into the compose project, removed by `down --remove-orphans`) so no release image can be removed from the shared Docker daemon before it is deployed. |
 | `environment/workspace/contracts/release-process.md` | The product contract. |
+| `environment/workspace/contracts/release-record.md` | The cloud release record every acting run writes and a fresh worker continues from. |
 | `environment/workspace/contracts/release-lock.md` | The exclusive release lock every `deploy.sh` run takes, respects (exit 75) and releases. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |
 | `tests/` | Verifier image and the weighted obligation suite. `tests/application` and `tests/contracts` mirror `environment/`, because Realm uploads only `tests/` as the verifier context. Keep them in sync. |
