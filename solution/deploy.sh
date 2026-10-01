@@ -54,7 +54,8 @@ LOCK_KEY='{"lock_id":{"S":"release-controller"}}'
 REQUESTED_INPUT="${BEACONFARE_RELEASE:-}"
 if [ -n "$REQUESTED_INPUT" ] \
    && ! jq -e --arg v "$REQUESTED_INPUT" '[.releases[].version] | index($v) != null' "$CONFIG_PATH" >/dev/null; then
-  die "requested release '$REQUESTED_INPUT' is not in config.json releases"
+  log "refused: requested release '$REQUESTED_INPUT' is not in config.json releases"
+  exit 64
 fi
 
 lock_table_exists() {

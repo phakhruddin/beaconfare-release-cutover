@@ -99,9 +99,11 @@ Do not modify the contracts or the supplied images.
   repair managed resources deleted after a previous deployment, and finish
   only when the deployment is ready as defined in `services/ecs.md`. Rejecting
   a candidate that fails verification is a successful run. Every run takes
-  the release lock from `release-lock.md` before it changes anything; while
-  another holder's lease is live it changes nothing and exits `75`. Each run
-  has 720 seconds and may produce at most 8 MiB of combined output.
+  the release lock from `release-lock.md` before it changes anything. A run
+  that must not act is **refused** under *Refusals* in `release-process.md`:
+  exit `64` for an unknown release (checked first) or `75` for another
+  holder's live lease, within 30 seconds, changing and repairing nothing.
+  Each run has 720 seconds and may produce at most 8 MiB of combined output.
 - `destroy.sh` removes only the resources belonging to this deployment and
   must not modify pre-existing resources. It has 900 seconds and may produce
   at most 8 MiB of combined output.
@@ -150,9 +152,12 @@ without going through `deploy.sh`, after the last release.
 8. While another holder's release lock lease is live, `deploy.sh` changes
    nothing and exits `75`; an expired lease is taken over, and every run
    releases its own lock when it ends.
-9. A standalone `terraform plan -refresh=false` against `infra/` shows
+9. An unknown requested release is refused with `64`, before the lock is
+   looked at. A refused run changes nothing and repairs nothing, not even
+   drift; the next run that is not refused repairs it as usual.
+10. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-10. `destroy.sh` removes everything this deployment owns and nothing else.
+11. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -160,11 +165,11 @@ The score is weighted by category. A run passes only at 100.
 
 | Category | Points |
 |---|---:|
-| Verified promotion and defective-release rejection | 28 |
-| Exclusive release lock | 12 |
-| Instant rollback, drift and repair, stable state | 24 |
-| Blue/green topology | 12 |
-| Product traffic | 5 |
+| Verified promotion and defective-release rejection | 24 |
+| Exclusive release lock and side-effect-free refusals | 19 |
+| Instant rollback, drift and repair, stable state | 23 |
+| Blue/green topology | 11 |
+| Product traffic | 4 |
 | Managed platform and isolation | 11 |
 | Destruction | 8 |
 | **Total** | **100** |

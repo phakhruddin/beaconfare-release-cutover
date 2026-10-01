@@ -50,6 +50,10 @@ Traps that carry the difficulty:
 10. **Serialize the controller.** A DynamoDB lease (`release-lock.md`) is
     taken before any change, respected with exit `75` while another holder's
     lease is live, taken over when expired, and released on every exit.
+11. **Refuse without side effects.** An unknown release exits `64` before the
+    lock is read; a live foreign lease exits `75`. Either way the run returns
+    within 30 s and changes and repairs nothing, not even drift; the next run
+    that is not refused restores the recorded state.
 
 ## Layout
 

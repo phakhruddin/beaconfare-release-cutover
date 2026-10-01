@@ -424,8 +424,8 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
                                      "deploy-lock-refused", release=cfg.initial_release)
         if status != 75:
             problems.append(f"while another holder's lease was live, deploy.sh exited {status}, expected 75")
-        if seconds > 60:
-            problems.append(f"the refused run took {seconds:.0f}s, more than 60s")
+        if seconds > 30:
+            problems.append(f"the refused run took {seconds:.0f}s, more than 30s")
         if _tree_digest(trial.config.submission_dir) != tree_before:
             problems.append("the refused run changed files in the submission directory")
         if trial.routing() != routing_before:
@@ -451,50 +451,133 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
     )
 
 
-@obligation("lifecycle.invalid_release_refused")
-def test_invalid_release_refused(trial: TrialContext) -> CheckResult:
-    """An unknown release is rejected before it can mutate the deployment."""
-    cfg, cloud = trial.config, trial.cloud
-    invalid = "not-a-beaconfare-release"
-    if any(release.get("version") == invalid for release in cfg.values["releases"]):
-        raise HarnessError(f"chosen invalid release unexpectedly exists: {invalid}")
+REFUSAL_SECONDS = 30
 
-    routing_before = trial.routing()
-    tasks_before = {color: cloud.running_tasks(trial.cluster, trial.service_arn(color))
-                    for color in ("blue", "green")}
-    tree_before = _tree_digest(cfg.submission_dir)
-    manifest_before = trial.manifest
+
+def _refusal_snapshot(trial: TrialContext) -> dict:
+    """Everything a refused run must leave exactly as it found it."""
+    cloud = trial.cloud
+    services = {}
+    for color in ("blue", "green"):
+        service = cloud.service(trial.cluster, trial.service_arn(color)) or {}
+        services[color] = (service.get("desiredCount"), service.get("taskDefinition"))
+    return {
+        "routing": trial.routing(),
+        "services": services,
+        "tree": _tree_digest(trial.config.submission_dir),
+        "lock": _lock_item(cloud.ddb, trial.config.lock_table),
+        "manifest": trial.config.manifest_path.read_bytes() if trial.config.manifest_path.is_file() else b"",
+    }
+
+
+def _diff(before: dict, after: dict) -> list[str]:
+    names = {"routing": "listener routing", "services": "an ECS service's desired count or task definition",
+             "tree": "files in the submission directory", "lock": "the release lock item",
+             "manifest": "manifest.json"}
+    return [names[key] for key in before if before[key] != after[key]]
+
+
+def _refused(trial: TrialContext, label: str, release: str | None, expected: int,
+             live_color_: str, live_tasks: set[str]) -> list[str]:
+    """Run one request that must be refused; return every way it was not."""
+    before = _refusal_snapshot(trial)
     with Traffic(trial.production) as traffic:
         time.sleep(1)
-        status, seconds = deploy_raw(cfg.submission_dir, cfg.logs_dir, "deploy-invalid-release", release=invalid,
-                                     timeout=90)
+        status, seconds = deploy_raw(trial.config.submission_dir, trial.config.logs_dir, label, release=release)
         time.sleep(1)
     problems = []
-    if status == 0:
-        problems.append("deploy.sh accepted an unknown release")
-    if seconds > 60:
-        problems.append(f"unknown release was not refused promptly ({seconds:.0f}s)")
-    if _tree_digest(cfg.submission_dir) != tree_before:
-        problems.append("refusing an unknown release changed the submission directory")
-    if trial.routing() != routing_before:
-        problems.append("refusing an unknown release changed listener routing")
-    tasks_after = {color: cloud.running_tasks(trial.cluster, trial.service_arn(color))
-                   for color in ("blue", "green")}
-    if tasks_after != tasks_before:
-        problems.append("refusing an unknown release started, stopped, or replaced tasks")
-    if _lock_item(cloud.ddb, cfg.lock_table):
-        problems.append("refusing an unknown release created or changed the release lock")
+    if status != expected:
+        problems.append(f"{label}: exited {status}, expected {expected}")
+    if seconds > REFUSAL_SECONDS:
+        problems.append(f"{label}: took {seconds:.0f}s, more than {REFUSAL_SECONDS}s")
+    changed = _diff(before, _refusal_snapshot(trial))
+    if changed:
+        problems.append(f"{label}: the refused run changed {', '.join(changed)}")
+    if trial.cloud.running_tasks(trial.cluster, trial.service_arn(live_color_)) != live_tasks:
+        problems.append(f"{label}: the refused run started, stopped or replaced live tasks")
     if traffic.report.failures():
-        problems.append(f"production traffic failed while refusing an unknown release: {traffic.report.describe()}")
-    trial.reload_manifest()
-    if trial.manifest != manifest_before:
-        problems.append("refusing an unknown release changed manifest.json")
+        problems.append(f"{label}: production requests failed: {traffic.report.describe()}")
+    return problems
+
+
+@obligation("lifecycle.refusals_side_effect_free")
+def test_refusals_side_effect_free(trial: TrialContext) -> CheckResult:
+    """Refused runs are bounded and change and repair nothing; the next run recovers."""
+    cfg, cloud = trial.config, trial.cloud
+    table = cfg.lock_table
+    color = live_color(trial)
+    standby = other(color)
+    live_version = trial.manifest["release"]["live_version"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    if _lock_item(cloud.ddb, table):
+        raise SubmissionFailure("a lock item is still present after every earlier deploy returned")
+    versions = {r["version"] for r in cfg.values["releases"]}
+    unknown = ["9.9.9", f"v{cfg.good_release}"]
+    if versions & set(unknown):
+        raise HarnessError(f"an unknown-release probe is a real release: {sorted(versions & set(unknown))}")
+    problems: list[str] = []
+
+    # 1. Unknown releases, including an exact-match near miss: 64, nothing changed.
+    for index, release in enumerate(unknown):
+        problems += _refused(trial, f"deploy-unknown-{index}", release, 64, color, live_tasks)
+
+    foreign = {"lock_id": {"S": "release-controller"}, "holder": {"S": "operator-maintenance"},
+               "lease_expires_at": {"N": str(int(time.time()) + 900)}, "note": {"S": "planned maintenance"}}
+    try:
+        # 2. Precedence: an unknown release is refused with 64 before the lock is
+        # looked at; the live foreign lease is left exactly as it was.
+        cloud.ddb.put_item(TableName=table, Item=foreign)
+        problems += _refused(trial, "deploy-unknown-under-lease", unknown[0], 64, color, live_tasks)
+
+        # 3. Drift under a live foreign lease: the refused run repairs nothing.
+        recorded_standby = 0 if trial.manifest["release"]["standby_version"] is None else cfg.desired
+        drifted_count = 1 if recorded_standby == 0 else 0
+        cloud.ecs.update_service(cluster=trial.cluster, service=trial.service_arn(standby),
+                                 desiredCount=drifted_count)
+        cloud.elbv2.modify_listener(ListenerArn=trial.manifest["edge"]["preview_listener_arn"], DefaultActions=[
+            {"Type": "forward", "TargetGroupArn": trial.target_group(color)}])
+        if len(cloud.wait_running(trial.cluster, trial.service_arn(standby), drifted_count, timeout=90)) != drifted_count:
+            raise HarnessError(f"could not drift {standby} to {drifted_count} task(s)")
+        if trial.routing()["preview"] != color:
+            raise HarnessError("the preview listener drift did not take effect")
+        problems += _refused(trial, "deploy-drift-under-lease", None, 75, color, live_tasks)
+        drifted = cloud.service(trial.cluster, trial.service_arn(standby)) or {}
+        if drifted.get("desiredCount") != drifted_count or trial.routing()["preview"] != color:
+            problems.append("the refused run repaired drift it must leave alone")
+    finally:
+        try:
+            cloud.ddb.delete_item(TableName=table, Key=LOCK_KEY)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 4. Recovery: with the lease gone, the next run repairs the drift as if
+    # the refused runs never happened.
+    report, failure = release_under_traffic(trial, None, "deploy-after-refusals")
+    if failure:
+        raise failure
+    problems.extend(traffic_problems(report, {live_version}))
+    routing = trial.routing()
+    if routing["production"] != color or routing["preview"] != standby:
+        problems.append(f"after recovery production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}; recorded production={color}, preview={standby}")
+    restored = cloud.wait_running(trial.cluster, trial.service_arn(standby), recorded_standby, timeout=120)
+    if len(restored) != recorded_standby:
+        problems.append(f"after recovery {standby} runs {len(restored)} tasks, recorded {recorded_standby}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != live_tasks:
+        problems.append(f"recovery replaced live {color} tasks")
+    release = trial.manifest["release"]
+    if release["live_version"] != live_version or release["last_request"]["outcome"] != "unchanged":
+        problems.append(f"after recovery the manifest release block is {release}")
+    if _lock_item(cloud.ddb, table):
+        problems.append("the recovery run did not release its lock")
+
     if problems:
         raise SubmissionFailure("; ".join(problems))
     return CheckResult(
-        "lifecycle.invalid_release_refused", Outcome.PASS,
-        "an unknown release exited non-zero before changing files, routing, tasks, manifest, or the release lock",
-        details={"status": status, "seconds": seconds, "requests": traffic.report.total},
+        "lifecycle.refusals_side_effect_free", Outcome.PASS,
+        "unknown releases (64, checked before the lock) and a live foreign lease (75) were refused within "
+        f"{REFUSAL_SECONDS}s with nothing changed or repaired; the next run restored the recorded state",
+        details={"requests": report.total},
     )
 
 

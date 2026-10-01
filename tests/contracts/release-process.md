@@ -38,13 +38,44 @@ service uses. Capacity rules:
 
 - Unset or empty: keep the currently live release. On the very first
   deployment this means `initial_release`.
-- A version not in `releases`: exit non-zero without changing anything.
+- A version not in `releases`: **refuse** with exit status `64` (see
+  *Refusals* below). Matching is exact and case-sensitive: `v3.5.0`,
+  ` 3.5.0` or `3.5.0-rc` are not `3.5.0`.
 
 Whatever deployment state you need to remember between runs (which color is
 live, which release each color runs) is your design, but it must survive
 between runs of `deploy.sh` in the same submission directory, and a
 standalone `terraform plan -refresh=false` against `infra/` must agree with
 what the last run deployed.
+
+## Refusals
+
+A run of `deploy.sh` is **refused** when it must not act at all. There are
+exactly two causes, checked in this order:
+
+| Order | Cause | Exit status |
+|---:|---|---:|
+| 1 | `BEACONFARE_RELEASE` is set to a version that is not in `releases` | `64` |
+| 2 | Another holder's release-lock lease is live (`release-lock.md`) | `75` |
+
+The request is validated first, before the lock is read or taken: an unknown
+release with a live foreign lease is refused with `64`, and the lease is left
+exactly as it was.
+
+A refused run:
+
+- exits within **30 seconds**, with the status above;
+- changes **nothing**: no file in the submission directory (configuration
+  files, Terraform state, the release record and `manifest.json` included),
+  no Terraform or OpenTofu command that writes state, and no AWS write of any
+  kind, the release lock table included;
+- **repairs nothing**, even when the cloud has drifted from the recorded
+  release state: swapped listeners stay swapped and wrong task counts stay
+  wrong until a run that is not refused puts them back.
+
+Once the cause is gone, the next run behaves exactly as if the refused run had
+never happened: it repairs any drift, honours its own request and records its
+own outcome.
 
 ## What each request must do
 

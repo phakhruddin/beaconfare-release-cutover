@@ -30,10 +30,10 @@ Other attributes are allowed and ignored.
    any release action: staging a candidate, changing a listener or changing
    a task count.
 2. **Respect a live lease.** If another holder's lease has not expired, the
-   run is **refused**: exit with status **`75`** within **60 seconds**,
-   having changed nothing. No Terraform apply, no write to the submission
-   directory, no manifest, no AWS write, and the existing lock item is left
-   exactly as it was.
+   run is **refused** with exit status **`75`**, under the refusal rules in
+   `release-process.md` (*Refusals*): within 30 seconds, nothing changed or
+   repaired, and the existing lock item left exactly as it was. An unknown
+   requested release is refused with `64` before the lock is looked at.
 3. **Take over an expired lease.** An item whose `lease_expires_at` is in
    the past belongs to a controller that died. Replace it with your own and
    continue normally.
