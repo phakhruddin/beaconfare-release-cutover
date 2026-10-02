@@ -188,10 +188,57 @@ scale_colors() {
   done
 }
 
+# The endpoint records a running service's new task definition but keeps
+# its running tasks on the old one (runtime.md). A color that ran tasks and
+# moved to another task definition is cycled through zero, so the tasks it
+# runs afterwards are the release the state assigns it. The live color is
+# never cycled.
+color_snapshot() {  # color_snapshot <service arns json> -> {color: {td, running, status}}
+  local arns="$1" c svc row out='{}'
+  for c in blue green; do
+    svc=$(jq -r --arg c "$c" '.[$c] // empty' <<<"$arns" 2>/dev/null || true)
+    [ -n "$svc" ] || continue
+    row=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+          --query 'services[0].{td:taskDefinition,running:runningCount,status:status}' --output json 2>/dev/null || true)
+    jq -e 'type == "object"' >/dev/null 2>&1 <<<"$row" || row=null
+    out=$(jq -c --arg c "$c" --argjson r "$row" '. + {($c): $r}' <<<"$out")
+  done
+  echo "$out"
+}
+
+refresh_stale() {  # refresh_stale <snapshot taken before the apply>
+  local before="$1" live c svc want was_td was_run td
+  live=$(st '.live_color')
+  for c in blue green; do
+    want=$(st ".color_count.${c}")
+    [ "$want" -gt 0 ] || continue
+    was_td=$(jq -r --arg c "$c" '.[$c] | select(. != null and .status != "INACTIVE") | .td // empty' <<<"$before")
+    was_run=$(jq -r --arg c "$c" '.[$c].running // 0' <<<"$before")
+    [ -n "$was_td" ] && [ "$was_run" -gt 0 ] || continue
+    svc=$(jq -r --arg c "$c" '.[$c]' <<<"$SERVICE_ARNS")
+    td=$("${AWSCLI[@]}" ecs describe-services --cluster "$CLUSTER" --services "$svc" \
+         --query 'services[0].taskDefinition' --output text 2>/dev/null || true)
+    [ -n "$td" ] && [ "$td" != "$was_td" ] || continue
+    if [ "$c" = "$live" ]; then
+      log "WARNING: live $c moved to $td with tasks running; live tasks are never cycled"
+      continue
+    fi
+    log "$c still runs tasks of ${was_td##*/}; cycling it through zero onto ${td##*/}"
+    "${AWSCLI[@]}" ecs update-service --cluster "$CLUSTER" --service "$svc" --desired-count 0 >/dev/null \
+      || die "could not scale $c to 0"
+    wait_idle "$c"
+    "${AWSCLI[@]}" ecs update-service --cluster "$CLUSTER" --service "$svc" --desired-count "$want" >/dev/null \
+      || die "could not scale $c to $want"
+  done
+}
+
 apply() {
+  local before='{}'
+  [ -n "${SERVICE_ARNS:-}" ] && before=$(color_snapshot "$SERVICE_ARNS")
   tf_apply
   [ -n "${SERVICE_ARNS:-}" ] || return 0
   scale_colors
+  refresh_stale "$before"
 }
 
 tf_out() { terraform -chdir="$INFRA_DIR" output -raw "$1"; }
@@ -313,6 +360,13 @@ set_state() { jq "$1" "$STATE_FILE" > "$WORK/state" && mv "$WORK/state" "$STATE_
 
 # ---- 1. converge on the recorded state (first deploy and repair) --------------------
 terraform -chdir="$INFRA_DIR" init -input=false >&2
+# What each color ran before this run's first apply (empty on a first deploy).
+PRE_SNAPSHOT='{}'
+PRE_ARNS=$(tf_json service_arns 2>/dev/null || true)
+if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$PRE_ARNS"; then
+  CLUSTER=$(tf_out cluster_arn 2>/dev/null || true)
+  [ -n "$CLUSTER" ] && PRE_SNAPSHOT=$(color_snapshot "$PRE_ARNS")
+fi
 apply
 
 EDGE_HOST=$(tf_out edge_dns_name)
@@ -321,6 +375,7 @@ TG_ARNS=$(tf_json target_group_arns)
 SERVICE_ARNS=$(tf_json service_arns)
 "$LOCK_HELD" || acquire_lock
 scale_colors
+refresh_stale "$PRE_SNAPSHOT"
 
 STANDBY_COLOR=$(other "$LIVE_COLOR")
 STANDBY_VERSION=$(st ".color_release.${STANDBY_COLOR}")

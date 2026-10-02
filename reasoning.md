@@ -157,6 +157,17 @@ its local cache (which the crashed run already updated) or the cloud over
 the record, or that redeploys a color already running its recorded release,
 fails it.
 
+The first v0.10.0 Oracle run (88) exposed an environment fact the contract
+had stated wrongly: Floci 1.5.33 records a running service's new task
+definition but never replaces its running tasks. Staging a candidate into a
+warm standby therefore never ran the candidate; earlier versions hid this
+because the only such staging was the defective release, whose rejection
+happened by readiness timeout instead of by self-test. `runtime.md` now
+states the observed behaviour (scale through zero to change a running
+color's release) and the reference cycles a non-live color through zero
+whenever its task definition changed under running tasks, so the defective
+release is now actually staged, self-tested and rejected.
+
 ### v0.9.0: the release state lives in the cloud
 
 Realm task version 17 (v0.8.0) still let four of six non-Astra runs reach

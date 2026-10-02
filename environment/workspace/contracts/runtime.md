@@ -76,12 +76,18 @@ The image writes one JSON object per line to stdout.
   a later change to its `container_definitions`, the image included, is
   ignored by Terraform. A release that needs a different image needs a task
   definition of its own.
-- **ECS deployments are simplified.** When a service's task definition
-  changes, the service starts replacement tasks and then stops the old ones.
+- **ECS deployments are simplified: a new task definition does not replace
+  running tasks.** When the task definition of a service that is running
+  tasks changes (through Terraform, OpenTofu or the API), the service records
+  the new task definition, but the tasks already running keep running the
+  old one; no replacement deployment happens. Tasks the service starts
+  afterwards, for example when it is scaled up from `0`, use the new task
+  definition. To move a color that runs tasks onto another release, scale it
+  to `0`, wait until it runs no tasks, then scale it back up.
   `deploymentConfiguration`, minimum and maximum percent, health check grace
   periods, the deployment circuit breaker and automatic rollback are
   recorded but **not acted on**. Changing only `desired_count` does not
-  replace running tasks.
+  replace running tasks either.
 - **A Terraform or OpenTofu update of an existing service's
   `desired_count` is not applied.** The apply succeeds and state records the
   new value, but the service keeps its previous desired count. The count a
