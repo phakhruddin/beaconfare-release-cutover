@@ -144,7 +144,9 @@ production forwards to the recorded live color, preview to the recorded
 standby color, and each color runs its recorded release at its recorded task
 count. It does this without failing a production request and without
 stopping or replacing a task of the recorded live color. Its outcome is
-`unchanged`.
+`unchanged`. The same holds after a controller crashed halfway through a
+release (`crash-recovery.md`): the cloud then shows the crashed run's
+half-finished work, and the record still shows the state to restore.
 
 ## Production during a release
 

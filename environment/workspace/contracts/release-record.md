@@ -50,4 +50,9 @@ Other attributes are allowed and ignored.
    rolled back to, and the standalone plan still shows nothing to create or
    delete.
 
+4. **A crash leaves the record behind.** A run that stops at a requested
+   crash point (`crash-recovery.md`) does not change the attributes above.
+   The next run that takes over the lock restores what the record says, not
+   what the crashed run left in the cloud or in local files.
+
 `destroy.sh` removes the record with the table.

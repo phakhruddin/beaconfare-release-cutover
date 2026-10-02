@@ -45,7 +45,10 @@ Other attributes are allowed and ignored.
 5. **Always release.** When the run ends, whether it succeeded, rejected a
    candidate or failed, delete the lock item with a write conditioned on
    `holder` still being yours. A lock you no longer hold is not yours to
-   delete.
+   delete. The one exception is a run that stops at a requested crash point
+   (`crash-recovery.md`): like a killed process, it leaves its lock item in
+   place, and the lease blocks other runs until it lapses or an operator
+   expires it.
 
 `destroy.sh` does not take the lock.
 

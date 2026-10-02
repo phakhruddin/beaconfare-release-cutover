@@ -27,6 +27,7 @@ settings and relationships for that resource.
 | [`release-process.md`](release-process.md) | Colors, release requests, verification, promotion, rollback, rejection. **The product contract.** |
 | [`release-lock.md`](release-lock.md) | The exclusive release lock every `deploy.sh` run takes, respects and releases |
 | [`release-record.md`](release-record.md) | The release state kept in the cloud: what every run writes, its generation, and continuing from it on a fresh worker |
+| [`crash-recovery.md`](crash-recovery.md) | Named crash points (`BEACONFARE_FAULT_POINT`), what a crashed run leaves behind, and how the next run recovers |
 | [`runtime.md`](runtime.md) | The release images, their environment and the endpoint behavior that affects deployment |
 | [`services/vpc.md`](services/vpc.md) | VPC, subnets, routing and security groups |
 | [`services/alb.md`](services/alb.md) | Load balancer, both listeners, both target groups |

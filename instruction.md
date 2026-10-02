@@ -39,6 +39,10 @@ The contracts are under `/workspace/contracts/`:
 - `release-record.md` defines the release record: the release state kept in
   the cloud, which every acting run writes and from which a run on a fresh
   worker must be able to continue.
+- `crash-recovery.md` defines two named crash points that `deploy.sh` must
+  honour when `BEACONFARE_FAULT_POINT` asks for one, what a crashed run
+  leaves behind (exit `137`, its lock still held, the record untouched) and
+  how the next run recovers.
 - `infrastructure.md` is the infrastructure index. Its linked files under
   `services/` define the network, load balancer, ECS, DynamoDB, IAM and
   logging requirements.
@@ -106,6 +110,8 @@ Do not modify the contracts or the supplied images.
   that must not act is **refused** under *Refusals* in `release-process.md`:
   exit `64` for an unknown release (checked first) or `75` for another
   holder's live lease, within 30 seconds, changing and repairing nothing.
+  When `BEACONFARE_FAULT_POINT` names a crash point from `crash-recovery.md`
+  and the run reaches it, the run stops there with exit `137`.
   Each run has 720 seconds and may produce at most 8 MiB of combined output.
 - `destroy.sh` removes only the resources belonging to this deployment and
   must not modify pre-existing resources. It has 900 seconds and may produce
@@ -167,9 +173,14 @@ through `deploy.sh`, after the last release.
     directory is replaced by a fresh copy (only Terraform state kept), the
     next runs continue from the record: nothing serving changes, no task
     starts or stops, and the warm standby can still be rolled back to.
-11. A standalone `terraform plan -refresh=false` against `infra/` shows
+11. A run asked to crash at `staged` or `switched` stops there with exit
+    `137`, leaving its lock held and the release record untouched. Once its
+    lease is expired, the next run restores the recorded state, not what the
+    crashed run left behind, without failing a production request or
+    disturbing a color that already runs its recorded release.
+12. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-12. `destroy.sh` removes everything this deployment owns and nothing else.
+13. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -177,14 +188,15 @@ The score is weighted by category. A run passes only at 100.
 
 | Category | Points |
 |---|---:|
-| Verified promotion and defective-release rejection | 22 |
+| Verified promotion and defective-release rejection | 18 |
 | Exclusive release lock and side-effect-free refusals | 17 |
 | Durable release record and independent recovery | 12 |
-| Instant rollback, drift and repair, stable state | 20 |
-| Blue/green topology | 9 |
-| Product traffic | 3 |
-| Managed platform and isolation | 10 |
-| Destruction | 7 |
+| Crash points and takeover recovery | 12 |
+| Instant rollback, drift and repair, stable state | 17 |
+| Blue/green topology | 8 |
+| Product traffic | 2 |
+| Managed platform and isolation | 8 |
+| Destruction | 6 |
 | **Total** | **100** |
 
 Letting a release that failed verification answer production traffic, or

@@ -18,6 +18,7 @@ def _run(script: Path, cwd: Path, timeout: int, label: str, logs_dir: Path,
         raise SubmissionFailure(f"{script.name} is missing")
     env = dict(os.environ)
     env.pop("BEACONFARE_RELEASE", None)
+    env.pop("BEACONFARE_FAULT_POINT", None)
     if release:
         env["BEACONFARE_RELEASE"] = release
     try:
@@ -46,10 +47,11 @@ def _capture(logs_dir: Path, label: str, output: bytes) -> None:
 
 
 def deploy_raw(submission: Path, logs_dir: Path, label: str, release: str | None = None,
-               timeout: int = DEPLOY_TIMEOUT) -> tuple[int, float]:
+               timeout: int = DEPLOY_TIMEOUT, fault_point: str | None = None) -> tuple[int, float]:
     """Run deploy.sh and return (exit status, seconds) without judging the status.
 
-    Used where a non-zero status is the contracted outcome (a refused run).
+    Used where a non-zero status is the contracted outcome (a refused run, or
+    a run asked to stop at a named crash point from crash-recovery.md).
     """
     import time as _time
     script = submission / "deploy.sh"
@@ -57,8 +59,11 @@ def deploy_raw(submission: Path, logs_dir: Path, label: str, release: str | None
         raise SubmissionFailure("deploy.sh is missing")
     env = dict(os.environ)
     env.pop("BEACONFARE_RELEASE", None)
+    env.pop("BEACONFARE_FAULT_POINT", None)
     if release:
         env["BEACONFARE_RELEASE"] = release
+    if fault_point:
+        env["BEACONFARE_FAULT_POINT"] = fault_point
     started = _time.monotonic()
     try:
         result = subprocess.run([str(script)], cwd=submission, timeout=timeout, env=env,

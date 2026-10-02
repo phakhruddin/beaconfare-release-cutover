@@ -23,6 +23,17 @@ trap 'declare -F release_lock >/dev/null && release_lock; rm -rf "$WORK"' EXIT
 log() { echo "[deploy] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# Named crash points (contracts/crash-recovery.md): stop like a killed
+# process. The lock stays held, the record and manifest are not written and
+# nothing is undone; only our private temp directory is removed.
+FAULT_POINT="${BEACONFARE_FAULT_POINT:-}"
+crash_at() {
+  [ "$FAULT_POINT" = "$1" ] || return 0
+  log "crash point '$1' reached: exiting 137 without cleanup"
+  trap 'rm -rf "$WORK"' EXIT
+  exit 137
+}
+
 cfg() { jq -r "$1" "$CONFIG_PATH"; }
 RESOURCE_PREFIX=$(cfg '.resource_prefix')
 REGION=$(cfg '.region')
@@ -332,15 +343,22 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
     log "rollback: $STANDBY_COLOR already runs $REQUESTED warm; swapping listeners"
     set_state ".live_color = \"$STANDBY_COLOR\""
     apply
+    crash_at switched
     OUTCOME=rolled_back
   else
     log "candidate $REQUESTED -> $STANDBY_COLOR (production stays on $LIVE_COLOR/$LIVE_VERSION)"
     set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
     apply
-    if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360 && selftest "$STANDBY_COLOR" "$REQUESTED"; then
+    VERIFIED=false
+    if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360; then
+      crash_at staged
+      selftest "$STANDBY_COLOR" "$REQUESTED" && VERIFIED=true
+    fi
+    if "$VERIFIED"; then
       log "promoting $REQUESTED"
       set_state ".live_color = \"$STANDBY_COLOR\""
       apply
+      crash_at switched
       OUTCOME=promoted
     else
       log "rejecting $REQUESTED; scaling $STANDBY_COLOR to zero"

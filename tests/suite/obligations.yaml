@@ -7,7 +7,7 @@
     {
       "id": "release_safety",
       "label": "Verified promotion and defective-release rejection",
-      "weight": 22,
+      "weight": 18,
       "obligations": [
         "lifecycle.zero_downtime_promotion",
         "lifecycle.defective_release_rejected"
@@ -31,9 +31,17 @@
       ]
     },
     {
+      "id": "crash_recovery",
+      "label": "Crash points and takeover recovery",
+      "weight": 12,
+      "obligations": [
+        "lifecycle.crash_points_recovered"
+      ]
+    },
+    {
       "id": "rollback_repair",
       "label": "Instant rollback, drift and repair, stable state",
-      "weight": 20,
+      "weight": 17,
       "obligations": [
         "lifecycle.instant_rollback",
         "lifecycle.drift_restored",
@@ -44,7 +52,7 @@
     {
       "id": "topology",
       "label": "Blue/green topology",
-      "weight": 9,
+      "weight": 8,
       "obligations": [
         "declared.release_topology",
         "realized.initial_release"
@@ -53,7 +61,7 @@
     {
       "id": "product",
       "label": "Product traffic",
-      "weight": 3,
+      "weight": 2,
       "obligations": [
         "observed.quotes_roundtrip"
       ]
@@ -61,7 +69,7 @@
     {
       "id": "platform",
       "label": "Managed platform and isolation",
-      "weight": 10,
+      "weight": 8,
       "obligations": [
         "declared.managed_iac",
         "declared.identity_data_logs"
@@ -70,17 +78,17 @@
     {
       "id": "teardown",
       "label": "Destruction",
-      "weight": 7,
+      "weight": 6,
       "obligations": [
         "lifecycle.destroy_clean"
       ]
     }
   ],
   "planes": {
-    "declared": 14,
+    "declared": 11,
     "realized": 5,
-    "observed": 3,
-    "lifecycle": 78
+    "observed": 2,
+    "lifecycle": 82
   },
   "hard_gates": [
     "trial.integrity",
@@ -96,7 +104,7 @@
     {
       "id": "declared.managed_iac",
       "plane": "declared",
-      "weight": 4,
+      "weight": 3,
       "hard_gate": "declared.managed_iac",
       "fidelity": "state",
       "implementation": "executable",
@@ -111,7 +119,7 @@
     {
       "id": "declared.release_topology",
       "plane": "declared",
-      "weight": 4,
+      "weight": 3,
       "fidelity": "state",
       "implementation": "executable",
       "given": "the release-process, ALB and ECS contracts",
@@ -127,7 +135,7 @@
     {
       "id": "declared.identity_data_logs",
       "plane": "declared",
-      "weight": 6,
+      "weight": 5,
       "fidelity": "state",
       "implementation": "executable",
       "given": "the IAM, DynamoDB and logging contracts",
@@ -161,7 +169,7 @@
     {
       "id": "observed.quotes_roundtrip",
       "plane": "observed",
-      "weight": 3,
+      "weight": 2,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a ready deployment",
@@ -176,7 +184,7 @@
     {
       "id": "lifecycle.zero_downtime_promotion",
       "plane": "lifecycle",
-      "weight": 11,
+      "weight": 9,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the initial release live under continuous production traffic; every release warms up for tens of seconds after start",
@@ -195,7 +203,7 @@
     {
       "id": "lifecycle.instant_rollback",
       "plane": "lifecycle",
-      "weight": 7,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a promoted release with the previous release running as warm standby",
@@ -211,7 +219,7 @@
     {
       "id": "lifecycle.drift_restored",
       "plane": "lifecycle",
-      "weight": 7,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a warm blue/green pair whose listeners were swapped and whose standby was scaled down outside deploy.sh",
@@ -227,7 +235,7 @@
     {
       "id": "lifecycle.defective_release_rejected",
       "plane": "lifecycle",
-      "weight": 11,
+      "weight": 9,
       "hard_gate": "lifecycle.no_defective_traffic",
       "fidelity": "real",
       "implementation": "executable",
@@ -295,6 +303,23 @@
       "deadline_seconds": 2700
     },
     {
+      "id": "lifecycle.crash_points_recovered",
+      "plane": "lifecycle",
+      "weight": 12,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the named crash points, crash leftovers and recovery rules in crash-recovery.md, with a warm blue/green pair",
+      "when": "the defective release is requested with BEACONFARE_FAULT_POINT=staged, a no-release run is attempted under the crashed holder's lease, the lease is expired and a no-release run follows; then the warm standby's release is requested with BEACONFARE_FAULT_POINT=switched, the lease is expired and a no-release run follows",
+      "then": [
+        "each crashed run exits 137 and leaves its lock item with a live lease, the release record's documented attributes and manifest.json unchanged",
+        "at staged the candidate runs api_desired_count warm tasks behind preview while production and its tasks are untouched; at switched production and preview forward to the rollback's colors using exactly the warm standby tasks",
+        "while the crashed holder's lease is live a run is refused with 75 and changes nothing",
+        "after the lease is expired the next run restores the recorded routing and each color's recorded release and count, starts or stops no task of a color that already runs its recorded release, records unchanged, keeps the generation and releases its lock",
+        "no production request fails and production is never answered by the staged candidate"
+      ],
+      "deadline_seconds": 3000
+    },
+    {
       "id": "lifecycle.repair_without_disruption",
       "plane": "lifecycle",
       "weight": 4,
@@ -312,7 +337,7 @@
     {
       "id": "lifecycle.reapply_stable",
       "plane": "lifecycle",
-      "weight": 2,
+      "weight": 1,
       "fidelity": "state+real",
       "implementation": "executable",
       "given": "a repaired deployment",
@@ -326,7 +351,7 @@
     {
       "id": "lifecycle.destroy_clean",
       "plane": "lifecycle",
-      "weight": 7,
+      "weight": 6,
       "hard_gate": "lifecycle.baseline_preserved",
       "fidelity": "real",
       "implementation": "executable",

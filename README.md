@@ -60,6 +60,12 @@ Traps that carry the difficulty:
     enough on its own: the verifier replaces the submission directory with a
     fresh copy (only Terraform state kept) and the controller must carry on
     without starting or stopping a task.
+13. **Survive a crashed controller.** `BEACONFARE_FAULT_POINT=staged|switched`
+    (`crash-recovery.md`) stops a run with exit `137` right after a candidate
+    is warm behind preview, or right after a promotion/rollback swapped the
+    listeners. The crashed run keeps its lock and leaves the record alone;
+    after the lease is expired, the next run must restore the recorded state
+    (not the cache, not the cloud) without disturbing healthy colors.
 
 ## Layout
 
@@ -70,6 +76,7 @@ Traps that carry the difficulty:
 | `environment/` | Agent workspace image, supplied release images, public contracts. `runtime.sh` also starts one idle `release-keeper` container per release image (labelled into the compose project, removed by `down --remove-orphans`) so no release image can be removed from the shared Docker daemon before it is deployed. |
 | `environment/workspace/contracts/release-process.md` | The product contract. |
 | `environment/workspace/contracts/release-record.md` | The cloud release record every acting run writes and a fresh worker continues from. |
+| `environment/workspace/contracts/crash-recovery.md` | Named crash points, what a crashed run leaves behind, and takeover recovery. |
 | `environment/workspace/contracts/release-lock.md` | The exclusive release lock every `deploy.sh` run takes, respects (exit 75) and releases. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |
 | `tests/` | Verifier image and the weighted obligation suite. `tests/application` and `tests/contracts` mirror `environment/`, because Realm uploads only `tests/` as the verifier context. Keep them in sync. |

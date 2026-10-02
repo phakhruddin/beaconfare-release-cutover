@@ -741,6 +741,203 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
     )
 
 
+RECORD_FIELDS = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
+                 "last_request_version", "last_request_outcome")
+CRASH_STATUSES = {137, -9}  # exit 137, or killed by SIGKILL
+
+
+def _documented(record: dict | None) -> dict:
+    return {key: (record or {}).get(key) for key in RECORD_FIELDS}
+
+
+def _crash_run(trial: TrialContext, label: str, release: str, point: str) -> tuple[int, TrafficReport]:
+    """Run deploy.sh asked to stop at a crash point, under production traffic."""
+    with Traffic(trial.production) as traffic:
+        time.sleep(2)
+        status, _seconds = deploy_raw(trial.config.submission_dir, trial.config.logs_dir, label,
+                                      release=release, fault_point=point)
+        time.sleep(2)
+    trial.facts.setdefault("quote_ids", []).extend(traffic.report.quote_ids())
+    return status, traffic.report
+
+
+def _crash_leftovers(trial: TrialContext, label: str, status: int, record_before: dict,
+                     manifest_before: bytes) -> list[str]:
+    """What a crashed run must leave: its live lock, the old record, the old manifest."""
+    cfg = trial.config
+    problems = []
+    if status not in CRASH_STATUSES:
+        problems.append(f"{label}: exited {status}, expected 137 at the crash point")
+    lock = _lock_item(trial.cloud.ddb, cfg.lock_table)
+    if not lock:
+        problems.append(f"{label}: the crashed run removed its release lock item")
+    else:
+        try:
+            expires = int(lock.get("lease_expires_at", {}).get("N", "0"))
+        except ValueError:
+            expires = 0
+        if expires <= int(time.time()):
+            problems.append(f"{label}: the crashed run left a lock whose lease is not live ({lock})")
+    if _documented(_record(trial)) != record_before:
+        problems.append(f"{label}: the crashed run changed the release record to {_documented(_record(trial))}, "
+                        f"expected it unchanged from {record_before}")
+    manifest = cfg.manifest_path.read_bytes() if cfg.manifest_path.is_file() else b""
+    if manifest != manifest_before:
+        problems.append(f"{label}: the crashed run rewrote manifest.json")
+    return problems
+
+
+def _expire_lease(trial: TrialContext) -> None:
+    """The operator ends a crashed holder's lease (crash-recovery.md, Recovering)."""
+    try:
+        trial.cloud.ddb.update_item(
+            TableName=trial.config.lock_table, Key=LOCK_KEY,
+            UpdateExpression="SET lease_expires_at = :past",
+            ConditionExpression="attribute_exists(lock_id)",
+            ExpressionAttributeValues={":past": {"N": str(int(time.time()) - 60)}})
+    except trial.cloud.ddb.exceptions.ConditionalCheckFailedException:
+        pass  # no lock item left behind: already reported
+
+
+def _wait_preview(trial: TrialContext, version: str, color: str, count: int, timeout: int = 60) -> list:
+    """Sample preview until `count` consecutive answers are version/color, or time runs out."""
+    deadline = time.monotonic() + timeout
+    while True:
+        wrong = serving(trial, trial.preview, version, color, count)
+        if not wrong or time.monotonic() >= deadline:
+            return wrong
+        time.sleep(3)
+
+
+def _after_recovery(trial: TrialContext, label: str, report: TrafficReport, failure: BaseException | None,
+                    live: str, live_version: str, standby_version: str, generation: int,
+                    unchanged_tasks: dict[str, set[str]], allowed: set[str]) -> list[str]:
+    cfg, cloud = trial.config, trial.cloud
+    if failure:
+        return [f"{label}: {failure}"]
+    standby = other(live)
+    problems = [f"{label}: {p}" for p in traffic_problems(report, allowed)]
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (live, standby):
+        problems.append(f"{label}: production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}; the record says {live} and {standby}")
+    for color, tasks in unchanged_tasks.items():
+        if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != tasks:
+            problems.append(f"{label}: {color} tasks were started, stopped or replaced although {color} "
+                            "already ran its recorded release")
+    if len(cloud.wait_running(trial.cluster, trial.service_arn(standby), cfg.desired, timeout=120)) != cfg.desired:
+        problems.append(f"{label}: the standby {standby} does not run {cfg.desired} tasks")
+    wrong = _wait_preview(trial, standby_version, standby, cfg.desired * 4, timeout=30)
+    if wrong:
+        problems.append(f"{label}: preview answered {wrong[:4]}, expected the recorded standby "
+                        f"{standby_version}/{standby}")
+    wrong = serving(trial, trial.production, live_version, live, cfg.desired * 4)
+    if wrong:
+        problems.append(f"{label}: production answered {wrong[:4]}, expected {live_version}/{live}")
+    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "unchanged"}:
+        problems.append(f"{label}: recorded {trial.manifest['release']['last_request']}, "
+                        f"expected {live_version}/unchanged")
+    record, found = _record_problems(trial, label)
+    problems += found
+    if record.get("generation") != generation:
+        problems.append(f"{label}: the recovery moved the record generation from {generation} to "
+                        f"{record.get('generation')}; the recorded state did not change")
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        problems.append(f"{label}: the recovery run did not release its lock")
+    return problems
+
+
+@obligation("lifecycle.crash_points_recovered")
+def test_crash_points_recovered(trial: TrialContext) -> CheckResult:
+    """A controller killed mid-release leaves its lock; the next run restores the record."""
+    cfg, cloud = trial.config, trial.cloud
+    record, found = _record_problems(trial, "before")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        raise SubmissionFailure("a lock item is still present after every earlier deploy returned")
+    live = live_color(trial)
+    standby = other(live)
+    live_version = trial.manifest["release"]["live_version"]
+    standby_version = trial.manifest["release"]["standby_version"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    if not standby_version or len(warm) != cfg.desired:
+        raise SubmissionFailure(f"no warm standby before the crash checks: {standby} runs {len(warm)} tasks, "
+                                f"manifest standby {standby_version}")
+    defective = cfg.defective_release
+    if defective in (live_version, standby_version):
+        raise HarnessError(f"the defective release {defective} is already deployed")
+    generation = record["generation"]
+    before = _documented(record)
+    problems: list[str] = []
+
+    # 1. Crash at `staged`: the defective candidate is warm in the standby
+    # color behind preview, its self-test not yet acted on.
+    manifest = cfg.manifest_path.read_bytes() if cfg.manifest_path.is_file() else b""
+    status, report = _crash_run(trial, "deploy-crash-staged", defective, "staged")
+    problems += [f"crash at staged: {p}" for p in traffic_problems(report, {live_version})]
+    problems += _crash_leftovers(trial, "crash at staged", status, before, manifest)
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (live, standby):
+        problems.append(f"crash at staged: production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}, expected {live} and {standby}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("crash at staged: the live tasks were started, stopped or replaced")
+    if len(cloud.wait_running(trial.cluster, trial.service_arn(standby), cfg.desired, timeout=60)) != cfg.desired:
+        problems.append(f"crash at staged: the candidate color {standby} does not run {cfg.desired} tasks")
+    wrong = _wait_preview(trial, defective, standby, cfg.desired * 4)
+    if wrong:
+        problems.append(f"crash at staged: preview answered {wrong[:4]}, expected the warm candidate "
+                        f"{defective}/{standby}")
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        # The crashed holder's live lease is respected like any other.
+        problems += _refused(trial, "deploy-crash-lease-live", None, 75, live, live_tasks)
+    _expire_lease(trial)
+
+    # 2. The next run takes over and restores the recorded standby release.
+    report, failure = release_under_traffic(trial, None, "deploy-crash-staged-recover")
+    problems += _after_recovery(trial, "recovery after staged", report, failure, live, live_version,
+                                standby_version, generation, {live: live_tasks}, {live_version})
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    record = _record(trial) or {}
+    before = _documented(record)
+
+    # 3. Crash at `switched`: a rollback has swapped the listeners.
+    manifest = cfg.manifest_path.read_bytes() if cfg.manifest_path.is_file() else b""
+    status, report = _crash_run(trial, "deploy-crash-switched", standby_version, "switched")
+    problems += [f"crash at switched: {p}" for p in traffic_problems(report, {live_version, standby_version})]
+    problems += _crash_leftovers(trial, "crash at switched", status, before, manifest)
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (standby, live):
+        problems.append(f"crash at switched: production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}, expected the rollback's {standby} and {live}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != warm:
+        problems.append("crash at switched: the rollback did not reuse exactly the warm standby tasks")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append(f"crash at switched: the {live} tasks were started, stopped or replaced")
+    _expire_lease(trial)
+
+    # 4. The next run puts the recorded routing back; both colors already
+    # run their recorded releases, so no task starts or stops.
+    report, failure = release_under_traffic(trial, None, "deploy-crash-switched-recover")
+    problems += _after_recovery(trial, "recovery after switched", report, failure, live, live_version,
+                                standby_version, generation, {live: live_tasks, standby: warm},
+                                {live_version, standby_version})
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.crash_points_recovered", Outcome.PASS,
+        f"runs killed at 'staged' ({defective} warm in {standby}) and at 'switched' (rollback listeners swapped) "
+        f"left their lock and the record (generation {generation}); after the leases were expired the next runs "
+        f"restored {live_version}/{live} live and {standby_version}/{standby} warm with no failed request, "
+        "outcome unchanged and the generation kept",
+    )
+
+
 @obligation("lifecycle.repair_without_disruption")
 def test_repair_without_disruption(trial: TrialContext) -> CheckResult:
     """Deleted managed resources come back while production keeps serving."""
