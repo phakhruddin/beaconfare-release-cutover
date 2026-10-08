@@ -162,9 +162,28 @@ REQUESTED="$REQUESTED_INPUT"
 log "prefix=$RESOURCE_PREFIX live=$LIVE_COLOR/$LIVE_VERSION requested=$REQUESTED desired=$DESIRED"
 
 # ---- helpers ----------------------------------------------------------------------
+# tf <args>: run Terraform in infra/, retrying a run that failed only because a
+# provider plugin did not start in time on a loaded host (runtime.md): such a
+# run changed nothing.
+tf() {
+  local attempt rc
+  for attempt in 1 2 3; do
+    set +e
+    terraform -chdir="$INFRA_DIR" "$@" 2>&1 | tee "$WORK/tf.out" >&2
+    rc=${PIPESTATUS[0]}
+    set -e
+    [ "$rc" = 0 ] && return 0
+    grep -q 'timeout while waiting for plugin to start' "$WORK/tf.out" || return "$rc"
+    [ "$attempt" -lt 3 ] || break
+    log "terraform $1: provider plugin did not start in time (attempt $attempt); retrying"
+    sleep $(( attempt * 10 ))
+  done
+  return "$rc"
+}
+
 tf_apply() {
   log "terraform apply ($(jq -c . "$STATE_FILE"))"
-  terraform -chdir="$INFRA_DIR" apply -input=false -auto-approve -compact-warnings >&2
+  tf apply -input=false -auto-approve -compact-warnings || die "terraform apply failed"
 }
 
 # Capacity. Terraform creates each service with its recorded count and then
@@ -359,7 +378,7 @@ selftest() {
 set_state() { jq "$1" "$STATE_FILE" > "$WORK/state" && mv "$WORK/state" "$STATE_FILE"; }
 
 # ---- 1. converge on the recorded state (first deploy and repair) --------------------
-terraform -chdir="$INFRA_DIR" init -input=false >&2
+tf init -input=false || die "terraform init failed"
 # What each color ran before this run's first apply (empty on a first deploy).
 PRE_SNAPSHOT='{}'
 PRE_ARNS=$(tf_json service_arns 2>/dev/null || true)

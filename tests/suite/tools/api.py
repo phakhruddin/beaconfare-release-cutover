@@ -47,11 +47,19 @@ class Api:
 
     def request(self, method: str, path: str, body: Any = None) -> ApiResponse:
         headers = {"Host": self.host_header, "Connection": "close"}
-        try:
-            response = requests.request(method, f"{self.base_url}{path}", headers=headers,
-                                        json=body, timeout=self.timeout, allow_redirects=False)
-        except requests.RequestException as exc:
-            return ApiResponse(status=0, headers={}, text="", error=type(exc).__name__)
+        # One retry after a timeout only (release-process.md, Production
+        # during a release): the endpoint host can stall briefly under load.
+        # A refused connection or any HTTP status is final.
+        for attempt in (1, 2):
+            try:
+                response = requests.request(method, f"{self.base_url}{path}", headers=headers,
+                                            json=body, timeout=self.timeout, allow_redirects=False)
+                break
+            except requests.Timeout as exc:
+                if attempt == 2:
+                    return ApiResponse(status=0, headers={}, text="", error=type(exc).__name__)
+            except requests.RequestException as exc:
+                return ApiResponse(status=0, headers={}, text="", error=type(exc).__name__)
         return ApiResponse(status=response.status_code,
                            headers={k.lower(): v for k, v in response.headers.items()},
                            text=response.text)

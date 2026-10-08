@@ -152,6 +152,10 @@ half-finished work, and the record still shows the state to restore.
 
 - Production answers **every** request with a non-5xx status while
   `deploy.sh` runs, for every outcome above. This includes `POST /quotes`.
+  The verifier gives each request 10 seconds; a request that gets no answer
+  in that time is sent once more (the endpoint host can stall briefly under
+  load), and it fails if the second attempt also gets no answer, a refused
+  connection or a 5xx.
 - A rejected candidate never answers a production request.
 - When `deploy.sh` returns after a promotion or rollback, every production
   response comes from *R*, and the preview listener serves the release that

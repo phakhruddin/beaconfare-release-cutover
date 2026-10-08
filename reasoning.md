@@ -168,6 +168,20 @@ color's release) and the reference cycles a non-live color through zero
 whenever its task definition changed under running tasks, so the defective
 release is now actually staged, self-tested and rejected.
 
+A later v0.10.1 Oracle run (job `rv-20261008T152700Z-75085c`, 76) drew
+`api_desired_count` 3 on a loaded host and hit three environment effects, none
+a contract violation by the reference: two production requests (of 1440) got
+no answer within 10 s during a promotion; a rollback's `terraform apply`
+failed with `timeout while waiting for plugin to start`; and the defective
+test then asked to "recover" with the good release that was already live
+(because the rollback had failed). v0.10.2 publishes the first two as
+environment facts (`release-process.md`: a request that times out is sent
+once more; `runtime.md`: a provider start-up timeout can be retried), the
+verifier's HTTP client retries a timed-out request once (a refused connection
+or any 5xx is still final), the reference retries Terraform on that specific
+error, and the defective test recovers with a correct release that is not
+live.
+
 ### v0.9.0: the release state lives in the cloud
 
 Realm task version 17 (v0.8.0) still let four of six non-Astra runs reach

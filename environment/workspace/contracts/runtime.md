@@ -99,5 +99,8 @@ The image writes one JSON object per line to stdout.
   listener uses a port, any `Host` header reaches it.
 - **Security groups and IAM policies are recorded, not enforced.** They are
   checked as declarations only.
+- **A loaded host can delay provider start-up.** Occasionally a Terraform or
+  OpenTofu command fails with `timeout while waiting for plugin to start`.
+  Run the same command again: the next run starts from the recorded state.
 - **Standalone security group rules may produce an invalid replacement plan.**
   Define ingress and egress as inline blocks on the security group resource.

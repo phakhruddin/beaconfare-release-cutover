@@ -290,7 +290,9 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
     # A rejected candidate leaves the standby color at zero. The next healthy
     # release must be staged from that state and proven normally; a controller
     # cannot treat rejection as a terminal/no-op condition.
-    good = cfg.good_release
+    # The recovery release is a correct release that is not live: normally the
+    # good release; the initial release when the good one is already live.
+    good = cfg.good_release if live_version != cfg.good_release else cfg.initial_release
     recovery_report, recovery_failure = release_under_traffic(trial, good, "deploy-recover")
     if recovery_failure:
         raise recovery_failure

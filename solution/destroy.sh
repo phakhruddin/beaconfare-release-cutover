@@ -27,7 +27,11 @@ if [ ! -f "${INFRA_DIR}/config.auto.tfvars.json" ]; then
     "$CONFIG_PATH" > "${INFRA_DIR}/config.auto.tfvars.json"
 fi
 
-terraform -chdir="$INFRA_DIR" init -input=false >&2
+terraform -chdir="$INFRA_DIR" init -input=false >&2 || {
+  log "terraform init failed (a provider plugin may not have started in time); retrying once"
+  sleep 10
+  terraform -chdir="$INFRA_DIR" init -input=false >&2
+}
 log "terraform destroy"
 if ! terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve >&2; then
   log "first destroy attempt failed, retrying once"
