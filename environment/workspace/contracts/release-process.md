@@ -52,12 +52,16 @@ what the last run deployed.
 ## Refusals
 
 A run of `deploy.sh` is **refused** when it must not act at all. There are
-exactly two causes, checked in this order:
+exactly three causes, checked in this order:
 
 | Order | Cause | Exit status |
 |---:|---|---:|
 | 1 | `BEACONFARE_RELEASE` is set to a version that is not in `releases` | `64` |
 | 2 | Another holder's release-lock lease is live (`release-lock.md`) | `75` |
+| 3 | The release record is not a deployable state (*Validity* in `release-record.md`) | `65` |
+
+A run refused with `65` has taken the release lock to read the record; it
+releases it before exiting, so the lock table ends exactly as it started.
 
 The request is validated first, before the lock is read or taken: an unknown
 release with a live foreign lease is refused with `64`, and the lease is left
@@ -88,14 +92,19 @@ The very first deployment puts `initial_release` live in one color with
    stopped or replaced. Managed resources deleted since the last run are
    repaired, and production keeps answering while that happens. Outcome
    `unchanged`.
-2. **R is the standby release and the standby color runs
-   `api_desired_count` tasks.** This is a **rollback**. Switch production to
+2. **R is the standby release, the standby color runs
+   `api_desired_count` tasks, and R is in the record's `verified` list**
+   (`release-record.md`). This is a **rollback**. Switch production to
    the standby color by changing where the listeners forward. Do not start
    new tasks for R: the tasks that were standby become live. The color that
    was live becomes standby, still running its release at
    `api_desired_count`. Outcome `rolled_back`.
-3. **Otherwise R is a candidate.** Deploy R into the standby color at
-   `api_desired_count` tasks, replacing whatever the standby color ran.
+3. **Otherwise R is a candidate.** This includes a standby release that is
+   not in `verified`, for example one an operator placed there: it is never
+   rolled back to without proof. Deploy R into the standby color at
+   `api_desired_count` tasks, replacing whatever the standby color ran (when
+   the standby color already runs R warm at that count, its tasks may be
+   kept).
    Production is not touched while this happens. Explicitly converge and
    confirm the preview listener's default action on the standby target group
    before waiting for candidate readiness or calling its self-test; do not
@@ -103,12 +112,13 @@ The very first deployment puts `initial_release` live in one color with
    **verify** R (below).
    - Verification passed: **promote** R by switching both listeners, so the
      candidate color becomes live and the old live color becomes standby.
-     Outcome `promoted`.
+     R is added to `verified`. Outcome `promoted`.
    - Verification failed, including because the candidate does not become
      ready before the controller's bounded verification wait: **reject** R.
      Production stays exactly as it was. Scale the candidate color to `0`
      tasks. `deploy.sh` still exits `0`, because rejecting an unproven release
-     is the pipeline working. Outcome `rejected`.
+     is the pipeline working. R is removed from `verified`. Outcome
+     `rejected`.
 
 A rejection is not terminal release state. A later request for any other
 valid release stages it from the zero-capacity standby color and follows the

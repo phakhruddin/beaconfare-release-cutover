@@ -108,8 +108,9 @@ Do not modify the contracts or the supplied images.
   a candidate that fails verification is a successful run. Every run takes
   the release lock from `release-lock.md` before it changes anything. A run
   that must not act is **refused** under *Refusals* in `release-process.md`:
-  exit `64` for an unknown release (checked first) or `75` for another
-  holder's live lease, within 30 seconds, changing and repairing nothing.
+  exit `64` for an unknown release (checked first), `75` for another
+  holder's live lease, or `65` for a release record that is not a deployable
+  state, within 30 seconds, changing and repairing nothing.
   When `BEACONFARE_FAULT_POINT` names a crash point from `crash-recovery.md`
   and the run reaches it, the run stops there with exit `137`.
   Each run has 720 seconds and may produce at most 8 MiB of combined output.
@@ -178,9 +179,16 @@ through `deploy.sh`, after the last release.
     lease is expired, the next run restores the recorded state, not what the
     crashed run left behind, without failing a production request or
     disturbing a color that already runs its recorded release.
-12. A standalone `terraform plan -refresh=false` against `infra/` shows
+12. An operator may edit the release record between runs (switch the live
+    color, change a color's release or count, revoke releases from
+    `verified`). The next run carries the edit out from the record without a
+    failed request and without touching colors that already match. Only a
+    release in `verified` is rolled back to; any other standby release must
+    pass its self-test first. A record that is not a deployable state is
+    refused with `65`.
+13. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-13. `destroy.sh` removes everything this deployment owns and nothing else.
+14. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -188,15 +196,16 @@ The score is weighted by category. A run passes only at 100.
 
 | Category | Points |
 |---|---:|
-| Verified promotion and defective-release rejection | 18 |
-| Exclusive release lock and side-effect-free refusals | 17 |
-| Durable release record and independent recovery | 12 |
-| Crash points and takeover recovery | 12 |
-| Instant rollback, drift and repair, stable state | 17 |
-| Blue/green topology | 8 |
-| Product traffic | 2 |
-| Managed platform and isolation | 8 |
-| Destruction | 6 |
+| Verified promotion and defective-release rejection | 12 |
+| Exclusive release lock and side-effect-free refusals | 11 |
+| Durable release record and independent recovery | 8 |
+| Crash points and takeover recovery | 8 |
+| Operator-edited release record and proven rollback targets | 37 |
+| Instant rollback, drift and repair, stable state | 11 |
+| Blue/green topology | 5 |
+| Product traffic | 1 |
+| Managed platform and isolation | 5 |
+| Destruction | 2 |
 | **Total** | **100** |
 
 Letting a release that failed verification answer production traffic, or

@@ -35,7 +35,7 @@ task_id = "0"
 instance_id = "compute_and_deployment_beaconfare_release_cutover"
 category = "compute_and_deployment"
 difficulty = "hard"
-version = "0.10.2"
+version = "0.11.0"
 
 [agent]
 timeout_sec = 43200.0

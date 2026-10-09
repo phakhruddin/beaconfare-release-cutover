@@ -597,7 +597,10 @@ def _record(trial: TrialContext) -> dict | None:
         return None
     out = {}
     for key, value in item.items():
-        if "S" in value:
+        if "L" in value:
+            # verified: order and duplicates are not significant
+            out[key] = sorted({entry["S"] for entry in value["L"] if isinstance(entry, dict) and "S" in entry})
+        elif "S" in value:
             out[key] = value["S"]
         elif "N" in value:
             try:
@@ -615,12 +618,17 @@ def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
         return {}, [f"{label}: there is no release record item (lock_id release-record)"]
     problems = []
     required = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
-                "last_request_version", "last_request_outcome")
+                "last_request_version", "last_request_outcome", "verified")
     missing = [key for key in required if key not in record]
     if missing:
         return record, [f"{label}: the release record lacks {missing}"]
     if not isinstance(record["generation"], int) or record["generation"] < 1:
         problems.append(f"{label}: record generation is {record['generation']!r}")
+    if not isinstance(record["verified"], list) or not record["verified"]:
+        problems.append(f"{label}: record verified is {record['verified']!r}, expected a non-empty list of releases")
+    elif record.get(f"{record['live_color']}_release") not in record["verified"]:
+        problems.append(f"{label}: the live release {record.get(record['live_color'] + '_release')} is not in "
+                        f"verified {record['verified']}")
     routing = trial.routing()
     if record["live_color"] != routing["production"]:
         problems.append(f"{label}: record live_color {record['live_color']} but production forwards to "
@@ -744,7 +752,7 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
 
 
 RECORD_FIELDS = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
-                 "last_request_version", "last_request_outcome")
+                 "last_request_version", "last_request_outcome", "verified")
 CRASH_STATUSES = {137, -9}  # exit 137, or killed by SIGKILL
 
 
@@ -937,6 +945,303 @@ def test_crash_points_recovered(trial: TrialContext) -> CheckResult:
         f"left their lock and the record (generation {generation}); after the leases were expired the next runs "
         f"restored {live_version}/{live} live and {standby_version}/{standby} warm with no failed request, "
         "outcome unchanged and the generation kept",
+    )
+
+
+# ---- operator-edited release record (release-record.md, rules 5 and Validity) ----
+
+def _raw_record(trial: TrialContext) -> dict:
+    item = trial.cloud.ddb.get_item(TableName=trial.config.lock_table, Key=RECORD_KEY,
+                                    ConsistentRead=True).get("Item")
+    if not item:
+        raise SubmissionFailure("there is no release record item (lock_id release-record)")
+    return item
+
+
+def _encode(value) -> dict:
+    if isinstance(value, bool):
+        raise HarnessError("booleans are not record values")
+    if isinstance(value, int):
+        return {"N": str(value)}
+    if isinstance(value, list):
+        return {"L": [{"S": str(entry)} for entry in value]}
+    return {"S": str(value)}
+
+
+def _operator_edit(trial: TrialContext, **changes) -> int:
+    """Edit the record the way an operator would: change values, generation + 1."""
+    if _lock_item(trial.cloud.ddb, trial.config.lock_table):
+        raise SubmissionFailure("a lock item is still present after every earlier deploy returned")
+    item = _raw_record(trial)
+    try:
+        generation = int(item["generation"]["N"]) + 1
+    except (KeyError, ValueError) as exc:
+        raise SubmissionFailure(f"the release record has no usable generation: {item.get('generation')}") from exc
+    for key, value in changes.items():
+        item[key] = _encode(value)
+    item["generation"] = {"N": str(generation)}
+    trial.cloud.ddb.put_item(TableName=trial.config.lock_table, Item=item)
+    return generation
+
+
+def _directive_run(trial: TrialContext, label: str, release: str | None, generation: int | None,
+                   allowed: set[str], unchanged: dict[str, set[str]]) -> tuple[list[str], dict]:
+    """Run deploy under traffic and check what every directive run must hold."""
+    report, failure = release_under_traffic(trial, release, label)
+    if failure:
+        return [f"{label}: {failure}"], {}
+    problems = [f"{label}: {p}" for p in traffic_problems(report, allowed)]
+    for color, tasks in unchanged.items():
+        if trial.cloud.running_tasks(trial.cluster, trial.service_arn(color)) != tasks:
+            problems.append(f"{label}: {color} tasks were started, stopped or replaced although {color} already "
+                            "ran its recorded release at its recorded count")
+    record, found = _record_problems(trial, label)
+    problems += found
+    if generation is not None and record.get("generation") != generation:
+        problems.append(f"{label}: the record generation is {record.get('generation')}, expected {generation}")
+    if _lock_item(trial.cloud.ddb, trial.config.lock_table):
+        problems.append(f"{label}: the run did not release its lock")
+    return problems, record
+
+
+def _expect_release(trial: TrialContext, label: str, live: str, live_version: str,
+                    standby_version: str | None, last: dict) -> list[str]:
+    release = trial.manifest["release"]
+    want = (live_version, live, standby_version, last)
+    have = (release["live_version"], release["live_color"], release["standby_version"], release["last_request"])
+    return [] if have == want else [f"{label}: the manifest release block is {release}, expected "
+                                    f"live {live_version}/{live}, standby {standby_version}, last request {last}"]
+
+
+@obligation("lifecycle.operator_directives_applied")
+def test_operator_directives_applied(trial: TrialContext) -> CheckResult:
+    """An operator's edits to the record are carried out with zero downtime."""
+    cfg, cloud = trial.config, trial.cloud
+    record, found = _record_problems(trial, "before")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    live = live_color(trial)
+    standby = other(live)
+    live_version = trial.manifest["release"]["live_version"]
+    standby_version = trial.manifest["release"]["standby_version"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    if not standby_version or len(warm) != cfg.desired or standby_version not in record["verified"]:
+        raise SubmissionFailure(f"no verified warm standby before the operator checks: {standby} runs {len(warm)} "
+                                f"tasks of {standby_version}, verified {record['verified']}")
+
+    # 1. The operator points live_color at the warm standby: the next run
+    # switches listeners onto exactly those tasks; nothing starts or stops.
+    generation = _operator_edit(trial, live_color=standby)
+    problems, _ = _directive_run(trial, "deploy-operator-swap", None, generation,
+                                 {live_version, standby_version}, {standby: warm, live: live_tasks})
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (standby, live):
+        problems.append(f"operator swap: production forwards to {routing['production']} and preview to "
+                        f"{routing['preview']}, the record says {standby} and {live}")
+    problems += _expect_release(trial, "operator swap", standby, standby_version, live_version,
+                                {"version": standby_version, "outcome": "unchanged"})
+    wrong = serving(trial, trial.production, standby_version, standby, cfg.desired * 4)
+    if wrong:
+        problems.append(f"operator swap: production answered {wrong[:4]}, expected {standby_version}/{standby}")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    new_live, new_standby = standby, live  # roles after the swap
+
+    # 2. The operator retires the standby: it scales to zero, live untouched.
+    generation = _operator_edit(trial, **{f"{new_standby}_count": 0})
+    problems, _ = _directive_run(trial, "deploy-operator-retire", None, generation, {standby_version},
+                                 {new_live: warm})
+    if cloud.wait_running(trial.cluster, trial.service_arn(new_standby), 0, timeout=120):
+        problems.append(f"operator retire: {new_standby} still runs tasks; the record says 0")
+    problems += _expect_release(trial, "operator retire", new_live, standby_version, None,
+                                {"version": standby_version, "outcome": "unchanged"})
+
+    # 3. The operator brings the standby back with a verified release.
+    generation = _operator_edit(trial, **{f"{new_standby}_count": cfg.desired,
+                                          f"{new_standby}_release": live_version})
+    more, _ = _directive_run(trial, "deploy-operator-provision", None, generation, {standby_version},
+                             {new_live: warm})
+    problems += more
+    if len(cloud.wait_running(trial.cluster, trial.service_arn(new_standby), cfg.desired, timeout=120)) != cfg.desired:
+        problems.append(f"operator provision: {new_standby} does not run {cfg.desired} tasks")
+    wrong = _wait_preview(trial, live_version, new_standby, cfg.desired * 4, timeout=30)
+    if wrong:
+        problems.append(f"operator provision: preview answered {wrong[:4]}, expected {live_version}/{new_standby}")
+    problems += _expect_release(trial, "operator provision", new_live, standby_version, live_version,
+                                {"version": standby_version, "outcome": "unchanged"})
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.operator_directives_applied", Outcome.PASS,
+        f"operator edits were carried out from the record: production moved onto the warm {standby} tasks with "
+        f"nothing started, the {live} standby was retired and brought back with {live_version}, every run "
+        "unchanged with the operator's generation kept",
+    )
+
+
+@obligation("lifecycle.unverified_standby_proven")
+def test_unverified_standby_proven(trial: TrialContext) -> CheckResult:
+    """A standby release that is not in verified is a candidate, never a rollback target."""
+    cfg, cloud = trial.config, trial.cloud
+    record, found = _record_problems(trial, "before")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    live = live_color(trial)
+    standby = other(live)
+    live_version = trial.manifest["release"]["live_version"]
+    standby_version = trial.manifest["release"]["standby_version"]
+    bad = cfg.defective_release
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    if not standby_version or bad in (live_version, standby_version) or bad in record["verified"]:
+        raise SubmissionFailure(f"unexpected state before the check: live {live_version}, standby "
+                                f"{standby_version}, verified {record['verified']}")
+    problems: list[str] = []
+
+    def defective_in_production(report) -> list[str]:
+        served = [s for s in report.samples if s.version == bad]
+        after = [r for r in sample(trial.production, cfg.desired * 4) if r.version == bad]
+        return [f"production was answered by the unverified {bad}: {len(served)} requests during deploy, "
+                f"{len(after)} after"] if served or after else []
+
+    # 1. The operator places the defective release in the standby. The run
+    # brings the standby to it; production is untouched; it is not verified.
+    generation = _operator_edit(trial, **{f"{standby}_release": bad, f"{standby}_count": cfg.desired})
+    report, failure = release_under_traffic(trial, None, "deploy-operator-stage-unverified")
+    problems += defective_in_production(report)
+    if failure:
+        raise SubmissionFailure("; ".join(problems + [str(failure)]))
+    problems += [f"operator staging: {p}" for p in traffic_problems(report, {live_version})]
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("operator staging: the live tasks were started, stopped or replaced")
+    wrong = _wait_preview(trial, bad, standby, cfg.desired * 4, timeout=60)
+    if wrong:
+        problems.append(f"operator staging: preview answered {wrong[:4]}, expected the operator's {bad}/{standby}")
+    record, found = _record_problems(trial, "operator staging")
+    problems += found
+    if bad in record.get("verified", []):
+        problems.append(f"operator staging: {bad} was added to verified without passing its self-test")
+    if record.get("generation") != generation:
+        problems.append(f"operator staging: the generation is {record.get('generation')}, expected {generation}")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    # 2. Requesting it is not a rollback: it is self-tested and rejected.
+    report, failure = release_under_traffic(trial, bad, "deploy-unverified-request")
+    problems += defective_in_production(report)
+    if failure:
+        raise SubmissionFailure("; ".join(problems + [str(failure)]))
+    problems += [f"unverified request: {p}" for p in traffic_problems(report, {live_version})]
+    if live_color(trial) != live or cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("unverified request: production or its tasks changed")
+    if cloud.wait_running(trial.cluster, trial.service_arn(standby), 0, timeout=120):
+        problems.append(f"unverified request: the rejected {standby} still runs tasks")
+    problems += _expect_release(trial, "unverified request", live, live_version, None,
+                                {"version": bad, "outcome": "rejected"})
+    record, found = _record_problems(trial, "unverified request")
+    problems += found
+    if bad in record.get("verified", []):
+        problems.append(f"unverified request: {bad} is in verified after failing its self-test")
+    if record.get("generation") != generation + 1:
+        problems.append(f"unverified request: the generation is {record.get('generation')}, expected {generation + 1}")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    # 3. The operator revokes a good release and places it in the standby.
+    revoked = [r for r in record["verified"] if r != standby_version]
+    generation = _operator_edit(trial, verified=revoked, **{f"{standby}_release": standby_version,
+                                                            f"{standby}_count": cfg.desired})
+    more, record = _directive_run(trial, "deploy-operator-stage-revoked", None, generation, {live_version},
+                                  {live: live_tasks})
+    problems += more
+    wrong = _wait_preview(trial, standby_version, standby, cfg.desired * 4, timeout=60)
+    if wrong:
+        problems.append(f"revoked staging: preview answered {wrong[:4]}, expected {standby_version}/{standby}")
+    if standby_version in record.get("verified", []):
+        problems.append(f"revoked staging: {standby_version} is back in verified although it was not proven again")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    # 4. Requesting it proves it first: outcome promoted, verified again.
+    report, failure = release_under_traffic(trial, standby_version, "deploy-revoked-request")
+    if failure:
+        raise failure
+    problems += [f"revoked request: {p}" for p in traffic_problems(report, {live_version, standby_version})]
+    if not single_changeover(report, live_version, standby_version):
+        problems.append(f"revoked request: production switched back to {live_version} after serving {standby_version}")
+    problems += _expect_release(trial, "revoked request", standby, standby_version, live_version,
+                                {"version": standby_version, "outcome": "promoted"})
+    wrong = serving(trial, trial.production, standby_version, standby, cfg.desired * 4)
+    if wrong:
+        problems.append(f"revoked request: production answered {wrong[:4]}, expected {standby_version}/{standby}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append(f"revoked request: the previously live {live} tasks were not kept as the warm standby")
+    record, found = _record_problems(trial, "revoked request")
+    problems += found
+    if standby_version not in record.get("verified", []):
+        problems.append(f"revoked request: {standby_version} passed its self-test but is not in verified")
+    if record.get("generation") != generation + 1:
+        problems.append(f"revoked request: the generation is {record.get('generation')}, expected {generation + 1}")
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.unverified_standby_proven", Outcome.PASS,
+        f"an operator-placed {bad} standby was self-tested and rejected instead of rolled back to; a revoked "
+        f"{standby_version} standby was proven again and promoted (outcome promoted, verified restored)",
+    )
+
+
+@obligation("lifecycle.undeployable_record_refused")
+def test_undeployable_record_refused(trial: TrialContext) -> CheckResult:
+    """A record that is not a deployable state is refused with 65, changing nothing."""
+    cfg, cloud = trial.config, trial.cloud
+    record, found = _record_problems(trial, "before")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    original = _raw_record(trial)
+    live = live_color(trial)
+    standby = other(live)
+    live_version = record[f"{live}_release"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    standby_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    generation = record["generation"]
+    without_live = [r for r in record["verified"] if r != live_version]
+    variants = [
+        ("deploy-record-live-idle", None, {f"{live}_count": 0}),
+        ("deploy-record-odd-count", None, {f"{standby}_count": cfg.desired + 1}),
+        ("deploy-record-live-unverified", None, {"verified": without_live or ["9.9.9"]}),
+        ("deploy-record-unknown-release", cfg.initial_release,
+         {f"{standby}_release": "9.9.9", f"{standby}_count": cfg.desired}),
+    ]
+    problems: list[str] = []
+    try:
+        for label, release, changes in variants:
+            item = dict(original)
+            for key, value in changes.items():
+                item[key] = _encode(value)
+            item["generation"] = {"N": str(generation + 1)}
+            cloud.ddb.put_item(TableName=cfg.lock_table, Item=item)
+            problems += _refused(trial, label, release, 65, live, live_tasks)
+            if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != standby_tasks:
+                problems.append(f"{label}: the refused run started, stopped or replaced standby tasks")
+    finally:
+        cloud.ddb.put_item(TableName=cfg.lock_table, Item=original)
+
+    # The operator puts the record right: the next run proceeds as if nothing happened.
+    more, _ = _directive_run(trial, "deploy-record-fixed", None, generation,
+                             {live_version}, {live: live_tasks, standby: standby_tasks})
+    problems += more
+    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "unchanged"}:
+        problems.append(f"after the record was fixed the run recorded {trial.manifest['release']['last_request']}")
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.undeployable_record_refused", Outcome.PASS,
+        f"four undeployable records were each refused with 65 within {REFUSAL_SECONDS}s with nothing changed; "
+        "with the record fixed the next run changed nothing and kept the generation",
     )
 
 

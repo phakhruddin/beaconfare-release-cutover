@@ -7,7 +7,7 @@
     {
       "id": "release_safety",
       "label": "Verified promotion and defective-release rejection",
-      "weight": 18,
+      "weight": 12,
       "obligations": [
         "lifecycle.zero_downtime_promotion",
         "lifecycle.defective_release_rejected"
@@ -16,7 +16,7 @@
     {
       "id": "release_lock",
       "label": "Exclusive release lock and side-effect-free refusals",
-      "weight": 17,
+      "weight": 11,
       "obligations": [
         "lifecycle.exclusive_release_lock",
         "lifecycle.refusals_side_effect_free"
@@ -25,7 +25,7 @@
     {
       "id": "release_record",
       "label": "Durable release record and independent recovery",
-      "weight": 12,
+      "weight": 8,
       "obligations": [
         "lifecycle.state_recovered_from_record"
       ]
@@ -33,15 +33,25 @@
     {
       "id": "crash_recovery",
       "label": "Crash points and takeover recovery",
-      "weight": 12,
+      "weight": 8,
       "obligations": [
         "lifecycle.crash_points_recovered"
       ]
     },
     {
+      "id": "operator_record",
+      "label": "Operator-edited release record and proven rollback targets",
+      "weight": 37,
+      "obligations": [
+        "lifecycle.operator_directives_applied",
+        "lifecycle.unverified_standby_proven",
+        "lifecycle.undeployable_record_refused"
+      ]
+    },
+    {
       "id": "rollback_repair",
       "label": "Instant rollback, drift and repair, stable state",
-      "weight": 17,
+      "weight": 11,
       "obligations": [
         "lifecycle.instant_rollback",
         "lifecycle.drift_restored",
@@ -52,7 +62,7 @@
     {
       "id": "topology",
       "label": "Blue/green topology",
-      "weight": 8,
+      "weight": 5,
       "obligations": [
         "declared.release_topology",
         "realized.initial_release"
@@ -61,7 +71,7 @@
     {
       "id": "product",
       "label": "Product traffic",
-      "weight": 2,
+      "weight": 1,
       "obligations": [
         "observed.quotes_roundtrip"
       ]
@@ -69,7 +79,7 @@
     {
       "id": "platform",
       "label": "Managed platform and isolation",
-      "weight": 8,
+      "weight": 5,
       "obligations": [
         "declared.managed_iac",
         "declared.identity_data_logs"
@@ -78,17 +88,17 @@
     {
       "id": "teardown",
       "label": "Destruction",
-      "weight": 6,
+      "weight": 2,
       "obligations": [
         "lifecycle.destroy_clean"
       ]
     }
   ],
   "planes": {
-    "declared": 11,
-    "realized": 5,
-    "observed": 2,
-    "lifecycle": 82
+    "declared": 7,
+    "realized": 3,
+    "observed": 1,
+    "lifecycle": 89
   },
   "hard_gates": [
     "trial.integrity",
@@ -104,7 +114,7 @@
     {
       "id": "declared.managed_iac",
       "plane": "declared",
-      "weight": 3,
+      "weight": 2,
       "hard_gate": "declared.managed_iac",
       "fidelity": "state",
       "implementation": "executable",
@@ -119,7 +129,7 @@
     {
       "id": "declared.release_topology",
       "plane": "declared",
-      "weight": 3,
+      "weight": 2,
       "fidelity": "state",
       "implementation": "executable",
       "given": "the release-process, ALB and ECS contracts",
@@ -135,7 +145,7 @@
     {
       "id": "declared.identity_data_logs",
       "plane": "declared",
-      "weight": 5,
+      "weight": 3,
       "fidelity": "state",
       "implementation": "executable",
       "given": "the IAM, DynamoDB and logging contracts",
@@ -153,7 +163,7 @@
     {
       "id": "realized.initial_release",
       "plane": "realized",
-      "weight": 5,
+      "weight": 3,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a completed first deploy",
@@ -169,7 +179,7 @@
     {
       "id": "observed.quotes_roundtrip",
       "plane": "observed",
-      "weight": 2,
+      "weight": 1,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a ready deployment",
@@ -184,7 +194,7 @@
     {
       "id": "lifecycle.zero_downtime_promotion",
       "plane": "lifecycle",
-      "weight": 9,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the initial release live under continuous production traffic; every release warms up for tens of seconds after start",
@@ -203,7 +213,7 @@
     {
       "id": "lifecycle.instant_rollback",
       "plane": "lifecycle",
-      "weight": 6,
+      "weight": 4,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a promoted release with the previous release running as warm standby",
@@ -219,7 +229,7 @@
     {
       "id": "lifecycle.drift_restored",
       "plane": "lifecycle",
-      "weight": 6,
+      "weight": 4,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a warm blue/green pair whose listeners were swapped and whose standby was scaled down outside deploy.sh",
@@ -235,7 +245,7 @@
     {
       "id": "lifecycle.defective_release_rejected",
       "plane": "lifecycle",
-      "weight": 9,
+      "weight": 6,
       "hard_gate": "lifecycle.no_defective_traffic",
       "fidelity": "real",
       "implementation": "executable",
@@ -254,7 +264,7 @@
     {
       "id": "lifecycle.exclusive_release_lock",
       "plane": "lifecycle",
-      "weight": 8,
+      "weight": 5,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment and the release lock table from release-lock.md",
@@ -271,7 +281,7 @@
     {
       "id": "lifecycle.refusals_side_effect_free",
       "plane": "lifecycle",
-      "weight": 9,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment, the refusal rules in release-process.md and the release lock",
@@ -288,7 +298,7 @@
     {
       "id": "lifecycle.state_recovered_from_record",
       "plane": "lifecycle",
-      "weight": 12,
+      "weight": 8,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the cloud release record contract in release-record.md",
@@ -305,7 +315,7 @@
     {
       "id": "lifecycle.crash_points_recovered",
       "plane": "lifecycle",
-      "weight": 12,
+      "weight": 8,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the named crash points, crash leftovers and recovery rules in crash-recovery.md, with a warm blue/green pair",
@@ -320,9 +330,58 @@
       "deadline_seconds": 3000
     },
     {
+      "id": "lifecycle.operator_directives_applied",
+      "plane": "lifecycle",
+      "weight": 14,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a verified warm blue/green pair and rule 5 of release-record.md (operators may edit the record)",
+      "when": "an operator points live_color at the warm standby, then sets the new standby's count to 0, then restores it with a verified release at api_desired_count, with a no-release run after each edit under continuous traffic",
+      "then": [
+        "after the swap production forwards to exactly the standby tasks and preview to the former live tasks, with no task started or stopped and a single changeover",
+        "after the retirement the standby runs no tasks, the manifest standby version is null and the live tasks are untouched",
+        "after the restoration the standby runs the operator's release at api_desired_count behind preview and the live tasks are untouched",
+        "every run records unchanged, keeps the operator's generation, leaves an accurate record and releases its lock",
+        "no production request fails"
+      ],
+      "deadline_seconds": 2400
+    },
+    {
+      "id": "lifecycle.unverified_standby_proven",
+      "plane": "lifecycle",
+      "weight": 13,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the verified list in release-record.md and the rollback rule in release-process.md",
+      "when": "an operator places the defective release in the standby and a no-release run follows, then the defective release is requested; then the operator removes the standby's good release from verified, places it in the standby, a no-release run follows, and that release is requested",
+      "then": [
+        "the operator-placed defective standby runs behind preview and is never added to verified; production never answers from it",
+        "requesting it is not a rollback: it is self-tested, rejected (outcome rejected), the standby scales to 0 and the generation moves by one",
+        "the revoked release is not re-added to verified by being staged",
+        "requesting the revoked release proves it first: outcome promoted, verified contains it again, the previous live tasks stay warm, the generation moves by one",
+        "no production request fails"
+      ],
+      "deadline_seconds": 3000
+    },
+    {
+      "id": "lifecycle.undeployable_record_refused",
+      "plane": "lifecycle",
+      "weight": 10,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the Validity rules in release-record.md and the refusal rules in release-process.md",
+      "when": "four undeployable records are planted one at a time (live color at 0 tasks, a count that is neither 0 nor api_desired_count, the live release missing from verified, an unknown release on a running color while a valid release is requested) and deploy runs after each; then the original record is put back and deploy runs with no release requested",
+      "then": [
+        "each run exits 65 within 30 seconds",
+        "no refused run changes the record, the lock table, a submission file, the manifest, a listener, a desired count, a task definition or any task, and no production request fails",
+        "with the record fixed, the next run records unchanged, keeps the generation and starts or stops no task"
+      ],
+      "deadline_seconds": 1500
+    },
+    {
       "id": "lifecycle.repair_without_disruption",
       "plane": "lifecycle",
-      "weight": 4,
+      "weight": 2,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment whose preview listener and standby service were deleted",
@@ -351,7 +410,7 @@
     {
       "id": "lifecycle.destroy_clean",
       "plane": "lifecycle",
-      "weight": 6,
+      "weight": 2,
       "hard_gate": "lifecycle.baseline_preserved",
       "fidelity": "real",
       "implementation": "executable",

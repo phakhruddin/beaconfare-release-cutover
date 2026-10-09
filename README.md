@@ -66,6 +66,13 @@ Traps that carry the difficulty:
     listeners. The crashed run keeps its lock and leaves the record alone;
     after the lease is expired, the next run must restore the recorded state
     (not the cache, not the cloud) without disturbing healthy colors.
+14. **Operators edit the record; rollback targets must be proven.** The
+    record lists `verified` releases. An operator may switch the live color,
+    change a color's release or count, or revoke releases; the next run
+    carries it out without disruption. A standby release that is not
+    verified (for example the defective one, placed by an operator) is a
+    candidate, never a rollback target. A record that is not a deployable
+    state is refused with `65`.
 
 ## Layout
 

@@ -112,6 +112,41 @@ else
   log "no lock table yet (first deployment): it is created by the first apply"
 fi
 
+# ---- the release record (contracts/release-record.md) -----------------------------
+# Read under the lock and validated before anything is written: a record an
+# operator edited into an impossible state is refused with 65, changing nothing.
+RECORD_KEY='{"lock_id":{"S":"release-record"}}'
+RELEASES_JSON=$(jq -c '[.releases[].version]' "$CONFIG_PATH")
+RECORD=""
+if "$LOCK_HELD" && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
+  RECORD=$("${AWSCLI[@]}" dynamodb get-item --table-name "$LOCK_TABLE" --key "$RECORD_KEY" \
+             --consistent-read --output json 2>/dev/null | jq -c '.Item // empty' || true)
+fi
+
+record_valid() {  # stdin: the record item in DynamoDB JSON
+  jq -e --argjson n "$DESIRED" --argjson rel "$RELEASES_JSON" '
+    def num: if type == "object" and has("N") then (.N | tonumber? // null) else null end;
+    def str: if type == "object" and has("S") and (.S | type) == "string" then .S else null end;
+    . as $rec
+    | ($rec.live_color | str) as $live
+    | ($rec.generation | num) as $g
+    | (($rec.verified.L // null) | if type == "array" then map(str) else null end) as $ver
+    | ($live == "blue" or $live == "green")
+      and $g != null and $g >= 1 and ($g | floor) == $g
+      and $ver != null and ($ver | length) > 0 and all($ver[]; . != null)
+      and all(("blue", "green");
+            . as $c | ($rec[$c + "_count"] | num) as $k | ($rec[$c + "_release"] | str) as $r
+            | ($k == 0 or $k == $n) and ($k == 0 or ($r != null and any($rel[]; . == $r))))
+      and (($rec[$live + "_count"] | num) == $n)
+      and (($rec[$live + "_release"] | str) as $lr | any($ver[]; . == $lr))
+  ' >/dev/null 2>&1
+}
+
+if [ -n "$RECORD" ] && ! record_valid <<<"$RECORD"; then
+  log "refused: the release record is not a state this controller can deploy: $RECORD"
+  exit 65
+fi
+
 # ---- inputs -------------------------------------------------------------------
 jq '{region, aws_endpoint_url, resource_prefix, api_desired_count,
      production_listener_port, preview_listener_port, log_retention_days,
@@ -129,20 +164,22 @@ fi
 # The cloud release record (contracts/release-record.md) is the source of
 # truth; the local file is only a cache that may be missing or stale (the
 # verifier can hand us a fresh copy with only Terraform state kept).
-RECORD_KEY='{"lock_id":{"S":"release-record"}}'
 PREV_GEN=0
-if "$LOCK_HELD" && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
-  RECORD=$("${AWSCLI[@]}" dynamodb get-item --table-name "$LOCK_TABLE" --key "$RECORD_KEY" \
-             --consistent-read --output json 2>/dev/null | jq -c '.Item // empty' || true)
-  if [ -n "$RECORD" ]; then
-    jq '{live_color: .live_color.S,
-         color_release: {blue: .blue_release.S, green: .green_release.S},
-         color_count: {blue: (.blue_count.N | tonumber), green: (.green_count.N | tonumber)}}' \
-      <<<"$RECORD" > "$STATE_FILE"
-    PREV_GEN=$(jq -r '.generation.N' <<<"$RECORD")
-    log "release state restored from the release record (generation $PREV_GEN)"
-  fi
+VERIFIED=$(jq -cn --arg r "$INITIAL" '[$r]')
+if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
+  # An idle color's release is not checked (it may name anything); any known
+  # release will do for its task definition.
+  jq --argjson rel "$RELEASES_JSON" --arg init "$INITIAL" '
+      def pick($r): if any($rel[]; . == $r) then $r else $init end;
+      {live_color: .live_color.S,
+       color_release: {blue: pick(.blue_release.S // ""), green: pick(.green_release.S // "")},
+       color_count: {blue: (.blue_count.N | tonumber), green: (.green_count.N | tonumber)}}' \
+    <<<"$RECORD" > "$STATE_FILE"
+  PREV_GEN=$(jq -r '.generation.N' <<<"$RECORD")
+  VERIFIED=$(jq -c '[.verified.L[].S] | unique' <<<"$RECORD")
+  log "release state restored from the release record (generation $PREV_GEN, verified $VERIFIED)"
 fi
+is_verified() { jq -e --arg r "$1" 'any(.[]; . == $r)' <<<"$VERIFIED" >/dev/null; }
 
 if [ ! -s "$STATE_FILE" ]; then
   FIRST_DEPLOY=true
@@ -412,7 +449,7 @@ $FIRST_DEPLOY && OUTCOME=initial
 if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
   standby_svc=$(jq -r --arg c "$STANDBY_COLOR" '.[$c]' <<<"$SERVICE_ARNS")
   standby_tg=$(jq -r --arg c "$STANDBY_COLOR" '.[$c]' <<<"$TG_ARNS")
-  if [ "$REQUESTED" = "$STANDBY_VERSION" ] && [ "$STANDBY_COUNT" = "$DESIRED" ] \
+  if [ "$REQUESTED" = "$STANDBY_VERSION" ] && [ "$STANDBY_COUNT" = "$DESIRED" ] && is_verified "$REQUESTED" \
      && [ "$(running_tasks "$standby_svc")" = "$DESIRED" ] && [ "$(healthy_targets "$standby_tg")" -ge "$DESIRED" ]; then
     log "rollback: $STANDBY_COLOR already runs $REQUESTED warm; swapping listeners"
     set_state ".live_color = \"$STANDBY_COLOR\""
@@ -423,19 +460,21 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
     log "candidate $REQUESTED -> $STANDBY_COLOR (production stays on $LIVE_COLOR/$LIVE_VERSION)"
     set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
     apply
-    VERIFIED=false
+    PASSED=false
     if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360; then
       crash_at staged
-      selftest "$STANDBY_COLOR" "$REQUESTED" && VERIFIED=true
+      selftest "$STANDBY_COLOR" "$REQUESTED" && PASSED=true
     fi
-    if "$VERIFIED"; then
+    if "$PASSED"; then
       log "promoting $REQUESTED"
+      VERIFIED=$(jq -c --arg r "$REQUESTED" '. + [$r] | unique' <<<"$VERIFIED")
       set_state ".live_color = \"$STANDBY_COLOR\""
       apply
       crash_at switched
       OUTCOME=promoted
     else
       log "rejecting $REQUESTED; scaling $STANDBY_COLOR to zero"
+      VERIFIED=$(jq -c --arg r "$REQUESTED" 'map(select(. != $r))' <<<"$VERIFIED")
       set_state ".color_count.${STANDBY_COLOR} = 0"
       apply
       wait_idle "$STANDBY_COLOR"
@@ -468,12 +507,13 @@ else
 fi
 "$LOCK_HELD" || die "the release lock is not held; refusing to write the release record"
 "${AWSCLI[@]}" dynamodb put-item --table-name "$LOCK_TABLE" --item "$(jq -c \
-    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" '{
+    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" --argjson ver "$VERIFIED" '{
       lock_id: {S: "release-record"}, generation: {N: ($g | tostring)},
       live_color: {S: .live_color},
       blue_release: {S: .color_release.blue}, green_release: {S: .color_release.green},
       blue_count: {N: (.color_count.blue | tostring)}, green_count: {N: (.color_count.green | tostring)},
-      last_request_version: {S: $v}, last_request_outcome: {S: $o}}' "$STATE_FILE")" >/dev/null \
+      last_request_version: {S: $v}, last_request_outcome: {S: $o},
+      verified: {L: [$ver[] | {S: .}]}}' "$STATE_FILE")" >/dev/null \
   || die "could not write the release record"
 log "release record generation $GENERATION written"
 
