@@ -106,7 +106,14 @@ release_lock() {
   fi
 }
 
-if lock_table_exists; then
+# Once Terraform state exists, the lock table is a managed resource and the
+# controller already knows it must exist.  Avoid a separate DescribeTable
+# round-trip before the conditional lock write: refusal of an operator-edited
+# record has a strict 30-second, no-change deadline.
+if [ -s "${INFRA_DIR}/terraform.tfstate" ] \
+   && jq -e '(.resources // []) | length > 0' "${INFRA_DIR}/terraform.tfstate" >/dev/null 2>&1; then
+  acquire_lock
+elif lock_table_exists; then
   acquire_lock
 else
   log "no lock table yet (first deployment): it is created by the first apply"

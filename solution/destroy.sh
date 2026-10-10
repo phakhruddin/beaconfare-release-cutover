@@ -32,6 +32,37 @@ terraform -chdir="$INFRA_DIR" init -input=false >&2 || {
   sleep 10
   terraform -chdir="$INFRA_DIR" init -input=false >&2
 }
+
+# The emulator reports an ECS service as deleted before its tasks have fully
+# stopped.  Its log-group deletion then waits for those writers indefinitely.
+# Tear down only the services and task definitions that Terraform state owns,
+# wait a bounded interval for that deployment's cluster to drain, and let the
+# ordinary full destroy remove every remaining managed resource.
+AWS_ENDPOINT_URL=$(jq -r '.aws_endpoint_url' "$CONFIG_PATH")
+AWSCLI=(aws --endpoint-url "$AWS_ENDPOINT_URL" --region "$REGION")
+CLUSTER=$(terraform -chdir="$INFRA_DIR" output -raw cluster_arn)
+
+log "stopping managed ECS services before log cleanup"
+terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve \
+  -target=aws_ecs_service.color >&2
+
+for attempt in $(seq 1 60); do
+  running=$("${AWSCLI[@]}" ecs list-tasks --cluster "$CLUSTER" --desired-status RUNNING \
+    --query 'taskArns' --output text)
+  if [ -z "$running" ] || [ "$running" = "None" ]; then
+    break
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    log "managed ECS tasks did not stop within 120 seconds"
+    exit 1
+  fi
+  sleep 2
+done
+
+log "deregistering managed ECS task definitions before log cleanup"
+terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve \
+  -target=aws_ecs_task_definition.api >&2
+
 log "terraform destroy"
 if ! terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve >&2; then
   log "first destroy attempt failed, retrying once"
