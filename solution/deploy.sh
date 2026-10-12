@@ -414,14 +414,15 @@ wait_idle() {  # wait_idle <color>: the color runs no tasks
   log "$1 is idle"
 }
 
-# observe_tasks <url> <color> <version> <seconds>:
-# collects the identities served by a ready endpoint.  Seeing DESIRED distinct
-# identities while the target group is healthy establishes the current warm
-# task set without treating health as a correctness check.
+# observe_tasks <url> <color> <version>:
+# collects one bounded fresh-connection witness from a ready endpoint. Up to
+# six samples per expected task gives the listener ample opportunity to expose
+# every task without turning proof reconciliation into a poll/sleep loop. A
+# shortfall is safe: it makes the proof ineligible for rollback.
 observe_tasks() {
-  local url="$1" color="$2" version="$3" deadline=$(( $(date +%s) + $4 ))
+  local url="$1" color="$2" version="$3" attempts=$(( DESIRED * 6 )) attempt
   local -a seen=()
-  while [ "$(date +%s)" -lt "$deadline" ]; do
+  for (( attempt = 0; attempt < attempts; attempt++ )); do
     local code task v c body present=false
     code=$(probe "$url" /release); task=$(header X-BeaconFare-Task)
     v=$(header X-BeaconFare-Version); c=$(header X-BeaconFare-Color)
@@ -429,14 +430,13 @@ observe_tasks() {
     if [ "$code" = "200" ] && [ -n "$task" ] && [ "$v" = "$version" ] && [ "$c" = "$color" ] \
        && jq -e --arg t "$task" --arg v "$version" --arg c "$color" \
             '.task == $t and .version == $v and .color == $c' <<<"$body" >/dev/null 2>&1; then
-      for present in "${seen[@]}"; do [ "$present" = "$task" ] && break; done
+      for present in "${seen[@]:-}"; do [ "$present" = "$task" ] && break; done
       [ "$present" = "$task" ] || seen+=("$task")
       if [ "${#seen[@]}" -eq "$DESIRED" ]; then
         printf '%s\n' "${seen[@]}" | jq -R . | jq -cs 'unique | sort'
         return 0
       fi
     fi
-    sleep 1
   done
   return 1
 }
@@ -450,7 +450,7 @@ proof_matches() {
   jq -e --arg v "$version" --argjson n "$DESIRED" \
     '.release == $v and (.tasks | type == "array" and length == $n and unique == .)' \
     >/dev/null 2>&1 <<<"$expected" || return 1
-  actual=$(observe_tasks "$url" "$color" "$version" 45) || return 1
+  actual=$(observe_tasks "$url" "$color" "$version") || return 1
   [ "$actual" = "$(jq -c '.tasks | unique | sort' <<<"$expected")" ]
 }
 
@@ -476,7 +476,7 @@ selftest() {
       log "selftest FAILED on $task ($code): ${body:0:400}"
       return 1
     fi
-    for present in "${seen[@]}"; do [ "$present" = "$task" ] && break; done
+    for present in "${seen[@]:-}"; do [ "$present" = "$task" ] && break; done
     [ "$present" = "$task" ] || seen+=("$task")
     if [ "${#seen[@]}" -eq "$DESIRED" ]; then
       SELFTEST_TASKS=$(printf '%s\n' "${seen[@]}" | jq -R . | jq -cs 'unique | sort')
@@ -484,7 +484,7 @@ selftest() {
       return 0
     fi
   done
-  log "selftest could not reach $DESIRED distinct warm $version tasks (saw:${seen[*]})"
+  log "selftest could not reach $DESIRED distinct warm $version tasks (saw:${seen[*]:-})"
   return 1
 }
 
@@ -518,23 +518,24 @@ if [ "$STANDBY_COUNT" -gt 0 ]; then
   wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION" 180 || log "standby $STANDBY_COLOR is not serving $STANDBY_VERSION"
 fi
 
-# Reconcile current-task evidence before making a release decision.  The live
-# color must retain an attestation; on first deployment or after an external
-# live-task restart it is safe to rebuild it through production because that
-# release is already the recorded, verified live release.  A standby never
-# gains proof merely by running: a changed or malformed proof is cleared, so
-# requesting it will take the preview self-test path instead of rollback.
+# Reconcile the live proof before making a release decision. On first
+# deployment or after an external live-task restart it is safe to rebuild it
+# through production because that release is already the recorded, verified
+# live release. A standby proof is observed once: on a no-release run to clear
+# stale evidence, or immediately before its rollback decision. This avoids a
+# duplicate listener pass that could make proof reconciliation consume the
+# release budget without changing any decision.
 if ! proof_matches "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION"; then
   log "live $LIVE_COLOR has no current-task proof; rebuilding it through production"
   selftest "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION" || die "recorded live $LIVE_COLOR/$LIVE_VERSION did not self-test"
   set_proof "$LIVE_COLOR" "$LIVE_VERSION" "$SELFTEST_TASKS"
 fi
-if [ "$STANDBY_COUNT" -gt 0 ]; then
+if [ "$REQUESTED" = "$LIVE_VERSION" ] && [ "$STANDBY_COUNT" -gt 0 ]; then
   if ! proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
     log "standby $STANDBY_COLOR proof is absent or stale; it is not a rollback target"
     clear_proof "$STANDBY_COLOR"
   fi
-else
+elif [ "$STANDBY_COUNT" -eq 0 ]; then
   clear_proof "$STANDBY_COLOR"
 fi
 

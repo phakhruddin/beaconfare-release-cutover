@@ -356,6 +356,13 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 | `lifecycle.current_task_proof_reconciled` | 13 | The verifier restarts a proven warm standby out of band while keeping its release and desired count. A no-release run must keep live traffic and tasks intact, retain global history but clear the stale standby proof. Requesting that same release must self-test every already-running replacement task through preview, switch once with outcome `promoted` (not `rolled_back`), and record an exact proof that independently sampled task identities match. |
 | `lifecycle.undeployable_record_refused` | 7 | Four undeployable records (live color idle, a count of `api_desired_count`+1, live release missing from `verified`, an unknown release on a running color while a valid release is requested) are each refused with `65` within 30 s, changing no record, lock, file, manifest, listener, count, task definition or task. With the record restored, the next run changes nothing and keeps the generation. |
 
+The controller takes one bounded, fresh-connection identity witness for the
+decision it is making (up to six samples per expected task). A no-release
+shortfall clears stale standby evidence; a requested standby shortfall is
+never a rollback shortcut and takes the candidate path. This preserves
+independently observable task identity while avoiding duplicate
+reconciliation loops that consume the release budget.
+
 ### Instant rollback, drift and repair, stable state — 11
 
 | Obligation | Pts | What it proves |

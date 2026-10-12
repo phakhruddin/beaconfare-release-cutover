@@ -157,11 +157,13 @@ that passed. The release record therefore carries one proof per color (see
 `release-record.md`): a release and the exact set of `X-BeaconFare-Task`
 identities that passed the preview self-test.
 
-- Just before a rollback, the controller independently samples
-  `GET /release` through preview until it has seen `api_desired_count`
-  distinct, ready task identities. It may roll back only when that set,
-  release and color exactly equal the standby proof. A count or target-health
-  check alone is not enough.
+- Just before a rollback, the controller independently takes a bounded fresh
+  `GET /release` witness through preview: up to six fresh connections per
+  expected task, collecting `api_desired_count` distinct, ready task
+  identities. It
+  may roll back only when that set, release and color exactly equal the
+  standby proof. A shortfall or mismatch takes the candidate path; a count or
+  target-health check alone is not enough.
 - A missing, malformed or stale standby proof is safe but not sufficient. A
   request for that release follows the candidate path, self-tests every
   current task through preview, and records a replacement proof before a
