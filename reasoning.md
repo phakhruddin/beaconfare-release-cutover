@@ -255,6 +255,13 @@ candidate state again. It does not skip convergence, readiness, self-test or
 promotion: the single convergence still restores the recorded live side and
 the candidate follows the ordinary verification path.
 
+After a successful apply, manifest construction reads Terraform's complete
+`outputs` object once from the local state already committed by that apply,
+rather than spawning one `terraform output` process per manifest field. The
+fresh-worker contract retains that state file and `terraform output` reads the
+same object; this removes provider process start-up from a post-success,
+read-only step without changing any deployed value or release decision.
+
 ### v0.9.0: the release state lives in the cloud
 
 Realm task version 17 (v0.8.0) still let four of six non-Astra runs reach

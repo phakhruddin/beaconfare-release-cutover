@@ -353,8 +353,22 @@ apply() {
   refresh_stale "$before"
 }
 
-tf_out() { terraform -chdir="$INFRA_DIR" output -raw "$1"; }
-tf_json() { terraform -chdir="$INFRA_DIR" output -json "$1"; }
+# Terraform has already committed outputs to its local state after a successful
+# apply. Reading that one file avoids launching a provider process for every
+# manifest field, which can otherwise stall after an otherwise-complete deploy
+# on a loaded host. The verifier's fresh-worker contract deliberately keeps
+# this state file, so it is the same source `terraform output` would read.
+TF_OUTPUTS='{}'
+load_tf_outputs() {
+  if [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
+    TF_OUTPUTS=$(jq -ce '.outputs // {}' "${INFRA_DIR}/terraform.tfstate") \
+      || die "could not read Terraform outputs from local state"
+  else
+    TF_OUTPUTS='{}'
+  fi
+}
+tf_out() { jq -er --arg name "$1" '.[$name].value' <<<"$TF_OUTPUTS"; }
+tf_json() { jq -ce --arg name "$1" '.[$name].value' <<<"$TF_OUTPUTS"; }
 
 EDGE_HOST=""
 probe() {  # probe <url> <path> -> writes headers+body, echoes http code
@@ -518,6 +532,7 @@ selftest() {
 
 # ---- 1. converge on the recorded state (first deploy and repair) --------------------
 tf init -input=false || die "terraform init failed"
+load_tf_outputs
 # What each color ran before this run's first apply (empty on a first deploy).
 PRE_SNAPSHOT='{}'
 PRE_ARNS=$(tf_json service_arns 2>/dev/null || true)
@@ -526,6 +541,7 @@ if jq -e 'type == "object"' >/dev/null 2>&1 <<<"$PRE_ARNS"; then
   [ -n "$CLUSTER" ] && PRE_SNAPSHOT=$(color_snapshot "$PRE_ARNS")
 fi
 apply
+load_tf_outputs
 
 EDGE_HOST=$(tf_out edge_dns_name)
 CLUSTER=$(tf_out cluster_arn)
