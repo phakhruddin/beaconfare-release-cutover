@@ -269,7 +269,7 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "a healthy deployment and the release lock table from release-lock.md",
-      "when": "an expired lease is planted and a candidate deploy runs; then a live lease held by another holder is planted and a deploy is requested",
+      "when": "an expired lease is planted immediately before the defective candidate deploy, whose lock is observed for the full run; then a live lease held by another holder is planted and a deploy is requested",
       "then": [
         "no lock item is left behind by earlier runs",
         "the expired lease is replaced by one lock held by this run, with lease_expires_at = acquisition + lock_lease_seconds, for the whole run",
@@ -303,7 +303,7 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "the cloud release record contract in release-record.md",
-      "when": "a known-good release is promoted, the submission directory is replaced by a fresh copy of the handed-over submission keeping only infra/terraform.tfstate, a no-release run follows, then the warm standby's release is requested",
+      "when": "the preceding defective-release recovery promotes a known-good release, the submission directory is replaced by a fresh copy of the handed-over submission keeping only infra/terraform.tfstate, a no-release run follows, then the warm standby's release is requested",
       "then": [
         "before and after every run the record matches what is deployed: live color, task counts, the release each non-idle color serves and the manifest's last request",
         "the promotion moves the generation by exactly one",

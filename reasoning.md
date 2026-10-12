@@ -241,6 +241,18 @@ or any 5xx is still final), the reference retries Terraform on that specific
 error, and the defective test recovers with a correct release that is not
 live.
 
+A later loaded-host run also exposed the equivalent pre-apply provider-schema
+startup cancellation (`Failed to load plugin schemas` / `GetProviderSchema
+request was cancelled`). `runtime.md` now publishes that exact transient and
+the reference retries it with the same bounded policy; resource, plan and
+application errors remain non-retryable.
+
+The reference also folds a known-new candidate into its first convergence
+instead of first applying the unchanged record and then applying the same
+candidate state again. It does not skip convergence, readiness, self-test or
+promotion: the single convergence still restores the recorded live side and
+the candidate follows the ordinary verification path.
+
 ### v0.9.0: the release state lives in the cloud
 
 Realm task version 17 (v0.8.0) still let four of six non-Astra runs reach
@@ -332,14 +344,14 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.exclusive_release_lock` | 5 | No lock item is left by earlier runs. The verifier plants an **expired** lease (holder `crashed-controller`) and requests the defective release under traffic: the run must replace it with one lease of its own (`lease_expires_at` = acquisition + `lock_lease_seconds`), hold it for the whole run, reject the candidate, and delete its lock at the end. Then it plants a **live** lease (holder `operator-maintenance`) and requests a candidate: `deploy.sh` must exit `75` within 30 s having changed no submission file, no routing and no task, and leaving the foreign lock byte-for-byte intact. |
+| `lifecycle.exclusive_release_lock` | 5 | No lock item is left by earlier runs. The verifier plants an **expired** lease (holder `crashed-controller`) immediately before the defective-release scenario and watches its full candidate/rejection run: the run must replace it with one lease of its own (`lease_expires_at` = acquisition + `lock_lease_seconds`), hold it for the whole run, and delete it at the end. Reusing that identical destructive run avoids staging the same defective candidate twice. Then it plants a **live** lease (holder `operator-maintenance`) and requests a candidate: `deploy.sh` must exit `75` within 30 s having changed no submission file, no routing and no task, and leaving the foreign lock byte-for-byte intact. |
 | `lifecycle.refusals_side_effect_free` | 6 | Two unknown releases (`9.9.9` and the near miss `v<good release>`) must each exit `64` within 30 s. With a live foreign lease planted, an unknown release must still exit `64` (validation precedes the lock) and leave the lease intact. Then the verifier drifts the standby's desired count and points the preview listener at the live color, and a no-release run under the live lease must exit `75` within 30 s and **repair none of it**. No refused run may change a submission file, the manifest, a listener, an ECS desired count or task definition, a live task or the lock item, and no production request may fail. Finally the lease is removed and a no-release run must restore the recorded routing and standby count without touching live tasks (outcome `unchanged`). |
 
 ### Durable release record and independent recovery — 8
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.state_recovered_from_record` | 8 | The record matches the live deployment (live color, per-color task counts, the release each non-idle color serves, the manifest's last request). Promoting a known-good release moves `generation` by exactly one. The verifier then replaces the submission directory with a fresh copy of the handed-over submission, keeping only `infra/terraform.tfstate`: a no-release run must change no routing, start or stop no task, record `unchanged` and keep the generation; requesting the warm standby's release must roll back onto exactly its tasks and move the generation by one. No production request may fail. |
+| `lifecycle.state_recovered_from_record` | 8 | The record matches the live deployment (live color, per-color task counts, the release each non-idle color serves, the manifest's last request). The preceding defective-release recovery's known-good promotion moves `generation` by exactly one. The verifier then replaces the submission directory with a fresh copy of the handed-over submission, keeping only `infra/terraform.tfstate`: a no-release run must change no routing, start or stop no task, record `unchanged` and keep the generation; requesting the warm standby's release must roll back onto exactly its tasks and move the generation by one. No production request may fail. |
 
 ### Crash points and takeover recovery — 8
 

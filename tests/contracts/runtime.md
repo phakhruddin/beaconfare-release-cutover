@@ -100,7 +100,9 @@ The image writes one JSON object per line to stdout.
 - **Security groups and IAM policies are recorded, not enforced.** They are
   checked as declarations only.
 - **A loaded host can delay provider start-up.** Occasionally a Terraform or
-  OpenTofu command fails with `timeout while waiting for plugin to start`.
+  OpenTofu command fails with `timeout while waiting for plugin to start`, or
+  with `Failed to load plugin schemas` followed by `GetProviderSchema request
+  was cancelled`. Both occur before Terraform can plan or change resources.
   Run the same command again: the next run starts from the recorded state.
 - **Standalone security group rules may produce an invalid replacement plan.**
   Define ingress and egress as inline blocks on the security group resource.

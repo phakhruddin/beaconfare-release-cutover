@@ -219,17 +219,39 @@ START_STATE=$(jq -cS . "$STATE_FILE")
 
 st() { jq -r "$1" "$STATE_FILE"; }
 other() { [ "$1" = "blue" ] && echo green || echo blue; }
+set_state() { jq "$1" "$STATE_FILE" > "$WORK/state" && mv "$WORK/state" "$STATE_FILE"; }
 
 LIVE_COLOR=$(st '.live_color')
 LIVE_VERSION=$(st ".color_release.${LIVE_COLOR}")
 REQUESTED="$REQUESTED_INPUT"
 [ -n "$REQUESTED" ] || REQUESTED="$LIVE_VERSION"
+STANDBY_COLOR=$(other "$LIVE_COLOR")
+STANDBY_VERSION=$(st ".color_release.${STANDBY_COLOR}")
+STANDBY_COUNT=$(st ".color_count.${STANDBY_COLOR}")
+
+# A release that is not the already-warm standby cannot take the rollback
+# path. Put its candidate state into the first convergence so we do not first
+# apply an identical no-op state and then apply candidate state again. The
+# first apply still restores the recorded live side before verification.
+CANDIDATE_PRECONVERGED=false
+if ! "$FIRST_DEPLOY" && [ "$REQUESTED" != "$LIVE_VERSION" ] \
+   && { [ "$REQUESTED" != "$STANDBY_VERSION" ] || [ "$STANDBY_COUNT" != "$DESIRED" ]; }; then
+  set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
+  CANDIDATE_PRECONVERGED=true
+  log "candidate $REQUESTED is included in the first recorded-state convergence"
+fi
 log "prefix=$RESOURCE_PREFIX live=$LIVE_COLOR/$LIVE_VERSION requested=$REQUESTED desired=$DESIRED"
 
 # ---- helpers ----------------------------------------------------------------------
-# tf <args>: run Terraform in infra/, retrying a run that failed only because a
-# provider plugin did not start in time on a loaded host (runtime.md): such a
-# run changed nothing.
+# tf <args>: run Terraform in infra/, retrying only documented provider
+# start-up failures on a loaded host (runtime.md). They occur before Terraform
+# can plan or change resources, so the retry starts from the same state.
+retryable_provider_startup_failure() {
+  grep -q 'timeout while waiting for plugin to start' "$WORK/tf.out" \
+    || { grep -q 'Failed to load plugin schemas' "$WORK/tf.out" \
+         && grep -q 'GetProviderSchema request was cancelled' "$WORK/tf.out"; }
+}
+
 tf() {
   local attempt rc
   for attempt in 1 2 3; do
@@ -238,9 +260,9 @@ tf() {
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" = 0 ] && return 0
-    grep -q 'timeout while waiting for plugin to start' "$WORK/tf.out" || return "$rc"
+    retryable_provider_startup_failure || return "$rc"
     [ "$attempt" -lt 3 ] || break
-    log "terraform $1: provider plugin did not start in time (attempt $attempt); retrying"
+    log "terraform $1: provider start-up was cancelled (attempt $attempt); retrying"
     sleep $(( attempt * 10 ))
   done
   return "$rc"
@@ -488,8 +510,6 @@ selftest() {
   return 1
 }
 
-set_state() { jq "$1" "$STATE_FILE" > "$WORK/state" && mv "$WORK/state" "$STATE_FILE"; }
-
 # ---- 1. converge on the recorded state (first deploy and repair) --------------------
 tf init -input=false || die "terraform init failed"
 # What each color ran before this run's first apply (empty on a first deploy).
@@ -585,7 +605,9 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
   else
     log "candidate $REQUESTED -> $STANDBY_COLOR (production stays on $LIVE_COLOR/$LIVE_VERSION)"
     set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
-    apply
+    if ! "$CANDIDATE_PRECONVERGED"; then
+      apply
+    fi
     PASSED=false
     if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360; then
       crash_at staged

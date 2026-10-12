@@ -258,8 +258,54 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
     color = live_color(trial)
     live_version = trial.manifest["release"]["live_version"]
     tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    table = cfg.lock_table
+    if cloud.table(table) is None:
+        raise SubmissionFailure(f"the release lock table {table} does not exist")
+    if _lock_item(cloud.ddb, table):
+        raise SubmissionFailure("a lock item is still present before the expired-lease candidate run")
 
-    report, failure = release_under_traffic(trial, bad, "deploy-defective")
+    # This is the same real candidate/rejection that the exclusive-lock
+    # obligation needs.  Observe its expired-lease takeover here instead of
+    # staging the defective release a second time in the next check.
+    cloud.ddb.put_item(TableName=table, Item={
+        "lock_id": {"S": "release-controller"}, "holder": {"S": "crashed-controller"},
+        "lease_expires_at": {"N": str(int(time.time()) - 120)}})
+    watcher = boto3.client("dynamodb", region_name=cfg.region, endpoint_url=cfg.endpoint_url,
+                           config=BOTO_CONFIG)
+    seen: list[tuple[str, int, float]] = []
+    stop = threading.Event()
+
+    def watch_takeover() -> None:
+        while not stop.is_set():
+            try:
+                item = _lock_item(watcher, table)
+            except Exception:  # noqa: BLE001 - a missed sample is not a verdict
+                item = None
+            if item:
+                seen.append((item.get("holder", {}).get("S", ""),
+                             int(item.get("lease_expires_at", {}).get("N", "0")), time.time()))
+            stop.wait(0.5)
+
+    started = time.time()
+    thread = threading.Thread(target=watch_takeover, daemon=True)
+    thread.start()
+
+    try:
+        report, failure = release_under_traffic(trial, bad, "deploy-defective")
+    finally:
+        stop.set()
+        thread.join(timeout=10)
+    ended = time.time()
+    own = [sample for sample in seen if sample[0] and sample[0] != "crashed-controller"]
+    holders = {holder for holder, _, _ in own}
+    acquired = min((expires for _, expires, _ in own), default=0) - cfg.lock_lease_seconds
+    trial.facts["expired_lock_takeover"] = {
+        "samples": len(own),
+        "single_holder": len(holders) == 1,
+        "acquired_during_run": bool(own) and started - 5 <= acquired <= ended + 5,
+        "acquired_promptly": bool(own) and own[0][2] - started <= 120,
+        "released": _lock_item(cloud.ddb, table) is None,
+    }
     served_bad = [s for s in report.samples if s.version == bad]
     after_bad = [r for r in sample(trial.production, cfg.desired * 6) if r.version == bad]
     if served_bad or after_bad:
@@ -286,6 +332,8 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
     if (release["live_version"], release["live_color"], release["standby_version"], release["last_request"]) \
             != (live_version, color, None, {"version": bad, "outcome": "rejected"}):
         problems.append(f"the manifest release block is {release}")
+    rejected_record, rejected_record_problems = _record_problems(trial, "after rejection")
+    problems.extend(rejected_record_problems)
 
     # A rejected candidate leaves the standby color at zero. The next healthy
     # release must be staged from that state and proven normally; a controller
@@ -313,6 +361,24 @@ def test_defective_release_rejected(trial: TrialContext) -> CheckResult:
             recovery["last_request"]) != (good, recovery_color, live_version,
                                              {"version": good, "outcome": "promoted"}):
         problems.append(f"the recovery manifest release block is {recovery}")
+    recovered_record, recovered_record_problems = _record_problems(trial, "after recovery promotion")
+    problems.extend(recovered_record_problems)
+    rejected_generation = rejected_record.get("generation")
+    recovered_generation = recovered_record.get("generation")
+    if not isinstance(rejected_generation, int) or not isinstance(recovered_generation, int):
+        problems.append(f"recovery promotion record generations are not integers: "
+                        f"{rejected_generation!r} -> {recovered_generation!r}")
+    elif recovered_generation != rejected_generation + 1:
+        problems.append(f"recovery promotion moved the record generation from "
+                        f"{rejected_generation} to {recovered_generation}, "
+                        "expected exactly one step")
+    trial.facts["recovery_promotion"] = {
+        "generation_before": rejected_record.get("generation"),
+        "generation_after": recovered_record.get("generation"),
+        "live_version": good,
+        "live_color": recovery_color,
+        "standby_version": live_version,
+    }
 
     if problems:
         raise SubmissionFailure("; ".join(problems))
@@ -355,64 +421,22 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
     if leftover:
         raise SubmissionFailure(f"a lock item is still present after every earlier deploy returned: {leftover}")
 
-    # --- Part 1: an expired lease left by a crashed controller is taken over,
-    # held for the whole run and released when the run ends.
-    color = live_color(trial)
-    live_version = trial.manifest["release"]["live_version"]
-    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
-    cloud.ddb.put_item(TableName=table, Item={
-        "lock_id": {"S": "release-controller"}, "holder": {"S": "crashed-controller"},
-        "lease_expires_at": {"N": str(int(time.time()) - 120)}})
-
-    watcher = boto3.client("dynamodb", region_name=cfg.region, endpoint_url=cfg.endpoint_url,
-                           config=BOTO_CONFIG)
-    seen: list[tuple[str, int, float]] = []
-    stop = threading.Event()
-
-    def watch() -> None:
-        while not stop.is_set():
-            try:
-                item = _lock_item(watcher, table)
-            except Exception:  # noqa: BLE001 - a missed sample is not a verdict
-                item = None
-            if item:
-                seen.append((item.get("holder", {}).get("S", ""),
-                             int(item.get("lease_expires_at", {}).get("N", "0")), time.time()))
-            stop.wait(0.5)
-
-    started = time.time()
-    thread = threading.Thread(target=watch, daemon=True)
-    thread.start()
-    try:
-        report, failure = release_under_traffic(trial, cfg.defective_release, "deploy-lock-takeover")
-    finally:
-        stop.set()
-        thread.join(timeout=10)
-    ended = time.time()
-    if failure:
-        raise failure
-    problems.extend(traffic_problems(report, {live_version}))
-    own = [s for s in seen if s[0] and s[0] != "crashed-controller"]
-    if not own:
-        problems.append("the expired lease was never replaced by a lock held by this run")
+    # --- Part 1: the preceding defective-release invocation planted an
+    # expired lease, took it over while it performed the full candidate
+    # rejection, and released it.  Reusing that identical destructive path
+    # preserves the lock assertion without spending another release cycle.
+    takeover = trial.facts.get("expired_lock_takeover")
+    if not isinstance(takeover, dict) or not takeover.get("samples"):
+        problems.append("the expired-lease candidate run never exposed a lock held by this controller")
     else:
-        holders = {holder for holder, _, _ in own}
-        if len(holders) > 1:
-            problems.append(f"the lock changed holder during one run: {sorted(holders)}")
-        acquired = min(expires for _, expires, _ in own) - cfg.lock_lease_seconds
-        if not started - 5 <= acquired <= ended + 5:
-            problems.append(f"lease_expires_at is not acquisition + lock_lease_seconds "
-                            f"({cfg.lock_lease_seconds}); implied acquisition at {acquired:.0f}, run {started:.0f}-{ended:.0f}")
-        if own[0][2] - started > 120:
-            problems.append("the lock was taken late in the run instead of before acting")
-    if _lock_item(cloud.ddb, table):
-        problems.append("the run did not release its lock when it ended")
-    release = trial.manifest["release"]
-    if release["last_request"] != {"version": cfg.defective_release, "outcome": "rejected"} \
-            or release["live_version"] != live_version:
-        problems.append(f"the takeover run did not reject the defective candidate: {release}")
-    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != live_tasks:
-        problems.append("the takeover run replaced live tasks")
+        if not takeover.get("single_holder"):
+            problems.append("the expired-lease candidate run changed lock holder")
+        if not takeover.get("acquired_during_run"):
+            problems.append("the expired-lease lease was not acquisition + lock_lease_seconds")
+        if not takeover.get("acquired_promptly"):
+            problems.append("the expired lease was taken late instead of before acting")
+        if not takeover.get("released"):
+            problems.append("the expired-lease candidate run did not release its lock")
 
     # --- Part 2: a live lease held by someone else refuses the run: exit 75,
     # nothing changed, the lock untouched.
@@ -452,7 +476,7 @@ def test_exclusive_release_lock(trial: TrialContext) -> CheckResult:
     return CheckResult(
         "lifecycle.exclusive_release_lock", Outcome.PASS,
         "an expired lease was taken over, held for the run and released; a live lease refused the run with 75 and no change",
-        details={"lock_samples": len(own), "requests": report.total},
+        details={"lock_samples": takeover.get("samples", 0) if isinstance(takeover, dict) else 0},
     )
 
 
@@ -754,27 +778,38 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         raise SubmissionFailure("; ".join(found))
     generation = record["generation"]
 
-    # 1. Build a warm standby: promote a known-good release that is not live.
+    # 1. The preceding defective-release recovery already staged and promoted
+    # a known-good release under traffic. Reuse that destructive run's record
+    # evidence rather than staging the same known-good candidate a second time.
+    promotion = trial.facts.get("recovery_promotion")
+    if not isinstance(promotion, dict):
+        raise SubmissionFailure("the preceding recovery promotion did not leave record evidence")
+    before_generation = promotion.get("generation_before")
+    after_generation = promotion.get("generation_after")
+    if not isinstance(before_generation, int) or not isinstance(after_generation, int):
+        problems.append(f"the preceding recovery promotion generations are not integers: {promotion}")
+    elif after_generation != before_generation + 1:
+        problems.append(f"the preceding recovery promotion generation is {promotion}")
+    if generation != after_generation:
+        problems.append(f"the record generation changed after the preceding recovery promotion: "
+                        f"{after_generation} -> {generation}")
+
     color = live_color(trial)
     standby = other(color)
     live_version = trial.manifest["release"]["live_version"]
-    target = cfg.initial_release if live_version != cfg.initial_release else cfg.good_release
-    old_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
-    report, failure = release_under_traffic(trial, target, "deploy-record-promote")
-    if failure:
-        raise failure
-    problems += traffic_problems(report, {live_version, target})
-    if trial.manifest["release"]["last_request"] != {"version": target, "outcome": "promoted"}:
-        raise SubmissionFailure(f"promoting {target} did not succeed: {trial.manifest['release']}")
-    record, found = _record_problems(trial, "after promotion")
-    problems += found
-    if record.get("generation") != generation + 1:
-        problems.append(f"promotion moved the record generation from {generation} to {record.get('generation')}, "
-                        "expected exactly one step")
-    new_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
-    warm = cloud.running_tasks(trial.cluster, trial.service_arn(color))
-    if warm != old_live_tasks:
-        problems.append(f"the previously live {color} tasks were not kept warm by the promotion")
+    standby_version = trial.manifest["release"]["standby_version"]
+    if not isinstance(standby_version, str) or not standby_version:
+        raise SubmissionFailure(f"the recovery promotion left no warm standby version: {trial.manifest['release']}")
+    if (live_version, color, standby_version) != (promotion.get("live_version"),
+                                                  promotion.get("live_color"),
+                                                  promotion.get("standby_version")):
+        problems.append(f"the release state no longer matches the recovery promotion: "
+                        f"{trial.manifest['release']} vs {promotion}")
+    new_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(color))
+    warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    if len(new_live_tasks) != cfg.desired or len(warm) != cfg.desired:
+        problems.append(f"the recovery promotion did not leave a warm pair: live={len(new_live_tasks)}, "
+                        f"standby={len(warm)}")
 
     # 2. A fresh worker: everything but Terraform state is gone.
     _fresh_worker(trial)
@@ -783,53 +818,53 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
     report, failure = release_under_traffic(trial, None, "deploy-record-fresh-worker")
     if failure:
         raise failure
-    problems += traffic_problems(report, {target})
-    if trial.manifest["release"]["last_request"] != {"version": target, "outcome": "unchanged"}:
+    problems += traffic_problems(report, {live_version})
+    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "unchanged"}:
         problems.append(f"on a fresh worker a no-release run recorded {trial.manifest['release']['last_request']}, "
-                        f"expected {target}/unchanged")
+                        f"expected {live_version}/unchanged")
     routing = trial.routing()
-    if (routing["production"], routing["preview"]) != (standby, color):
+    if (routing["production"], routing["preview"]) != (color, standby):
         problems.append(f"on a fresh worker production forwards to {routing['production']} and preview to "
-                        f"{routing['preview']}, expected {standby} and {color}")
-    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != new_live_tasks:
+                        f"{routing['preview']}, expected {color} and {standby}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != new_live_tasks:
         problems.append("on a fresh worker the live tasks were started, stopped or replaced")
-    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != warm:
+    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != warm:
         problems.append("on a fresh worker the warm standby tasks were started, stopped or replaced")
     record, found = _record_problems(trial, "fresh worker")
     problems += found
     # The fresh worker must retain durable proof for both untouched warm
     # colors, not merely enough release names to perform a rollback.
-    problems += _current_proof_problems(trial, record, standby, "fresh worker live proof")
-    problems += _current_proof_problems(trial, record, color, "fresh worker standby proof")
-    if record.get("generation") != generation + 1:
+    problems += _current_proof_problems(trial, record, color, "fresh worker live proof")
+    problems += _current_proof_problems(trial, record, standby, "fresh worker standby proof")
+    if record.get("generation") != generation:
         problems.append(f"a run that changed nothing moved the record generation to {record.get('generation')}, "
-                        f"expected {generation + 1}")
+                        f"expected {generation}")
 
     # 4. The warm standby is still a rollback target, found from the record.
-    report, failure = release_under_traffic(trial, live_version, "deploy-record-rollback")
+    report, failure = release_under_traffic(trial, standby_version, "deploy-record-rollback")
     if failure:
         raise failure
-    problems += traffic_problems(report, {target, live_version})
-    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "rolled_back"}:
-        problems.append(f"after a fresh worker, requesting the warm standby {live_version} recorded "
+    problems += traffic_problems(report, {live_version, standby_version})
+    if trial.manifest["release"]["last_request"] != {"version": standby_version, "outcome": "rolled_back"}:
+        problems.append(f"after a fresh worker, requesting the warm standby {standby_version} recorded "
                         f"{trial.manifest['release']['last_request']}, expected rolled_back")
-    if trial.routing()["production"] != color:
-        problems.append(f"the rollback did not return production to {color}")
-    if cloud.running_tasks(trial.cluster, trial.service_arn(color)) != warm:
+    if trial.routing()["production"] != standby:
+        problems.append(f"the rollback did not return production to {standby}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != warm:
         problems.append("the rollback did not reuse exactly the warm standby tasks")
     record, found = _record_problems(trial, "after rollback")
     problems += found
-    if record.get("generation") != generation + 2:
+    if record.get("generation") != generation + 1:
         problems.append(f"the rollback moved the record generation to {record.get('generation')}, "
-                        f"expected {generation + 2}")
+                        f"expected {generation + 1}")
 
     if problems:
         raise SubmissionFailure("; ".join(problems))
     return CheckResult(
         "lifecycle.state_recovered_from_record", Outcome.PASS,
-        f"the release record tracked a promotion (generation {generation}->{generation + 1}); on a fresh worker a "
-        f"no-release run changed nothing and the warm standby {live_version} was rolled back to "
-        f"(generation {generation + 2})",
+        f"the release record tracked the preceding recovery promotion (generation "
+        f"{promotion.get('generation_before')}->{generation}); on a fresh worker a no-release run changed nothing "
+        f"and the warm standby {standby_version} was rolled back to (generation {generation + 1})",
     )
 
 
