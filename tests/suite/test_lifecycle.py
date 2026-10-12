@@ -625,22 +625,50 @@ def _proof(record: dict, color: str) -> tuple[object, object]:
     return record.get(f"{color}_proof_release"), record.get(f"{color}_proof_tasks")
 
 
-def _observed_task_ids(trial: TrialContext, api, version: str, color: str, count: int,
-                       timeout: int = 30) -> tuple[set[str], list[str]]:
-    """Collect the task identities independently observable through a listener."""
-    deadline = time.monotonic() + timeout
+def _observed_task_ids(api, version: str, color: str, count: int) -> tuple[set[str], list[str]]:
+    """Bounded, connection-spread observation of one listener's current tasks.
+
+    The API client makes a fresh connection for each request, spreading
+    consecutive samples across the listener's tasks.  Six samples per
+    expected task gives a bounded witness without embedding a poll/sleep
+    loop in every lifecycle assertion.
+    """
     seen: set[str] = set()
     wrong: list[str] = []
-    while time.monotonic() < deadline:
-        for response in sample(api, max(3, count * 3)):
-            if response.status != 200 or response.version != version or response.color != color or not response.task:
-                wrong.append(f"{response.status}/{response.version}/{response.color}/{response.task}")
-                continue
-            seen.add(response.task)
-        if len(seen) >= count:
-            return seen, wrong
-        time.sleep(1)
+    for response in sample(api, max(6, count * 6)):
+        if response.status != 200 or response.version != version or response.color != color or not response.task:
+            wrong.append(f"{response.status}/{response.version}/{response.color}/{response.task}")
+            continue
+        seen.add(response.task)
     return seen, wrong
+
+
+def _current_proof_problems(trial: TrialContext, record: dict, color: str, label: str) -> list[str]:
+    """Check one durable proof against the task identities the listener serves.
+
+    This deliberately lives in the focused proof paths instead of the generic
+    record helper: all existing state checks still validate the proof's shape,
+    while exact listener evidence is collected only where the contract's
+    current-task decision is under test.
+    """
+    cfg = trial.config
+    count = record.get(f"{color}_count")
+    release = record.get(f"{color}_release")
+    proof_release, proof_tasks = _proof(record, color)
+    if count != cfg.desired or proof_release != release or not isinstance(proof_tasks, list) \
+       or len(proof_tasks) != cfg.desired or len(set(proof_tasks)) != cfg.desired \
+       or any(not isinstance(task, str) or not task for task in proof_tasks):
+        return [f"{label}: {color} has no exact current-task proof for {release}: "
+                f"release={proof_release!r} tasks={proof_tasks!r}"]
+    api = trial.production if color == record.get("live_color") else trial.preview
+    observed, wrong = _observed_task_ids(api, release, color, cfg.desired)
+    problems = []
+    if wrong:
+        problems.append(f"{label}: {color} proof listener returned unexpected responses {wrong[:3]}")
+    if observed != set(proof_tasks):
+        problems.append(f"{label}: {color} proof tasks {sorted(proof_tasks)} do not equal independently "
+                        f"observed current tasks {sorted(observed)}")
+    return problems
 
 
 def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
@@ -696,13 +724,6 @@ def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
             problems.append(f"{label}: {color} proof is not an exact {cfg.desired}-task proof for "
                             f"{record[f'{color}_release']}: release={proof_release!r} tasks={proof_tasks!r}")
             continue
-        api = trial.production if color == record["live_color"] else trial.preview
-        observed, wrong = _observed_task_ids(trial, api, record[f"{color}_release"], color, cfg.desired)
-        if wrong:
-            problems.append(f"{label}: {color} proof listener returned unexpected responses {wrong[:3]}")
-        if observed != set(proof_tasks):
-            problems.append(f"{label}: {color} proof tasks {sorted(proof_tasks)} do not equal independently "
-                            f"observed current tasks {sorted(observed)}")
     last = trial.manifest["release"]["last_request"]
     if (record["last_request_version"], record["last_request_outcome"]) != (last["version"], last["outcome"]):
         problems.append(f"{label}: record last request {record['last_request_version']}/"
@@ -776,6 +797,10 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         problems.append("on a fresh worker the warm standby tasks were started, stopped or replaced")
     record, found = _record_problems(trial, "fresh worker")
     problems += found
+    # The fresh worker must retain durable proof for both untouched warm
+    # colors, not merely enough release names to perform a rollback.
+    problems += _current_proof_problems(trial, record, standby, "fresh worker live proof")
+    problems += _current_proof_problems(trial, record, color, "fresh worker standby proof")
     if record.get("generation") != generation + 1:
         problems.append(f"a run that changed nothing moved the record generation to {record.get('generation')}, "
                         f"expected {generation + 1}")
@@ -1270,6 +1295,9 @@ def test_current_task_proof_reconciled(trial: TrialContext) -> CheckResult:
         raise SubmissionFailure(
             f"no proven warm standby before current-task proof check: {standby}={standby_version}, "
             f"tasks={len(old_warm)}, proof={proof_release!r}/{proof_tasks!r}, verified={record['verified']}")
+    initial_proof_problems = _current_proof_problems(trial, record, standby, "before warm-task restart")
+    if initial_proof_problems:
+        raise SubmissionFailure("; ".join(initial_proof_problems))
 
     # The release and recorded desired count stay unchanged, but the actual
     # warm processes are deliberately replaced out of band.  A global
@@ -1329,6 +1357,8 @@ def test_current_task_proof_reconciled(trial: TrialContext) -> CheckResult:
         problems.append(f"stale-evidence request recorded {trial.manifest['release']['last_request']}, expected promoted")
     record, found = _record_problems(trial, "after current-task re-proof")
     problems += found
+    problems += _current_proof_problems(trial, record, standby, "after current-task re-proof")
+    problems += _current_proof_problems(trial, record, live, "former live proof after re-proof")
     if record.get("generation") != generation + 1:
         problems.append(f"re-proven promotion changed generation {generation} -> {record.get('generation')}, expected one")
 
