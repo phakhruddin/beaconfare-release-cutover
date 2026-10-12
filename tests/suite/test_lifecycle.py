@@ -598,8 +598,15 @@ def _record(trial: TrialContext) -> dict | None:
     out = {}
     for key, value in item.items():
         if "L" in value:
-            # verified: order and duplicates are not significant
-            out[key] = sorted({entry["S"] for entry in value["L"] if isinstance(entry, dict) and "S" in entry})
+            if key == "verified":
+                # verified: order and duplicates are not significant
+                out[key] = sorted({entry["S"] for entry in value["L"]
+                                   if isinstance(entry, dict) and "S" in entry})
+            else:
+                # A proof must retain duplicates and malformed entries so the
+                # verifier can reject a non-exact attestation rather than
+                # accidentally normalizing it into a valid one.
+                out[key] = [entry.get("S") if isinstance(entry, dict) else None for entry in value["L"]]
         elif "S" in value:
             out[key] = value["S"]
         elif "N" in value:
@@ -610,6 +617,32 @@ def _record(trial: TrialContext) -> dict | None:
     return out
 
 
+PROOF_FIELDS = ("blue_proof_release", "blue_proof_tasks", "green_proof_release", "green_proof_tasks")
+
+
+def _proof(record: dict, color: str) -> tuple[object, object]:
+    """Return the durable proof fields exactly as the controller recorded them."""
+    return record.get(f"{color}_proof_release"), record.get(f"{color}_proof_tasks")
+
+
+def _observed_task_ids(trial: TrialContext, api, version: str, color: str, count: int,
+                       timeout: int = 30) -> tuple[set[str], list[str]]:
+    """Collect the task identities independently observable through a listener."""
+    deadline = time.monotonic() + timeout
+    seen: set[str] = set()
+    wrong: list[str] = []
+    while time.monotonic() < deadline:
+        for response in sample(api, max(3, count * 3)):
+            if response.status != 200 or response.version != version or response.color != color or not response.task:
+                wrong.append(f"{response.status}/{response.version}/{response.color}/{response.task}")
+                continue
+            seen.add(response.task)
+        if len(seen) >= count:
+            return seen, wrong
+        time.sleep(1)
+    return seen, wrong
+
+
 def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
     """Check the release record against what is actually deployed."""
     cfg, cloud = trial.config, trial.cloud
@@ -618,7 +651,7 @@ def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
         return {}, [f"{label}: there is no release record item (lock_id release-record)"]
     problems = []
     required = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
-                "last_request_version", "last_request_outcome", "verified")
+                "last_request_version", "last_request_outcome", "verified", *PROOF_FIELDS)
     missing = [key for key in required if key not in record]
     if missing:
         return record, [f"{label}: the release record lacks {missing}"]
@@ -646,6 +679,30 @@ def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
             if versions != {record[f"{color}_release"]}:
                 problems.append(f"{label}: record {color}_release {record[f'{color}_release']} but {color} "
                                 f"serves {sorted(versions)}")
+        proof_release, proof_tasks = _proof(record, color)
+        if count == 0:
+            if proof_release != "" or proof_tasks != []:
+                problems.append(f"{label}: idle {color} must have an empty proof, found "
+                                f"release={proof_release!r} tasks={proof_tasks!r}")
+            continue
+        has_proof = proof_release != "" or proof_tasks != []
+        if color != record["live_color"] and not has_proof:
+            # A running standby can intentionally have no proof; it is then
+            # safe behind preview but cannot be rolled back to.
+            continue
+        if proof_release != record[f"{color}_release"] or not isinstance(proof_tasks, list) \
+           or len(proof_tasks) != cfg.desired or len(set(proof_tasks)) != cfg.desired \
+           or any(not isinstance(task, str) or not task for task in proof_tasks):
+            problems.append(f"{label}: {color} proof is not an exact {cfg.desired}-task proof for "
+                            f"{record[f'{color}_release']}: release={proof_release!r} tasks={proof_tasks!r}")
+            continue
+        api = trial.production if color == record["live_color"] else trial.preview
+        observed, wrong = _observed_task_ids(trial, api, record[f"{color}_release"], color, cfg.desired)
+        if wrong:
+            problems.append(f"{label}: {color} proof listener returned unexpected responses {wrong[:3]}")
+        if observed != set(proof_tasks):
+            problems.append(f"{label}: {color} proof tasks {sorted(proof_tasks)} do not equal independently "
+                            f"observed current tasks {sorted(observed)}")
     last = trial.manifest["release"]["last_request"]
     if (record["last_request_version"], record["last_request_outcome"]) != (last["version"], last["outcome"]):
         problems.append(f"{label}: record last request {record['last_request_version']}/"
@@ -752,7 +809,7 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
 
 
 RECORD_FIELDS = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
-                 "last_request_version", "last_request_outcome", "verified")
+                 "last_request_version", "last_request_outcome", "verified", *PROOF_FIELDS)
 CRASH_STATUSES = {137, -9}  # exit 137, or killed by SIGKILL
 
 
@@ -1190,6 +1247,98 @@ def test_unverified_standby_proven(trial: TrialContext) -> CheckResult:
         "lifecycle.unverified_standby_proven", Outcome.PASS,
         f"an operator-placed {bad} standby was self-tested and rejected instead of rolled back to; a revoked "
         f"{standby_version} standby was proven again and promoted (outcome promoted, verified restored)",
+    )
+
+
+@obligation("lifecycle.current_task_proof_reconciled")
+def test_current_task_proof_reconciled(trial: TrialContext) -> CheckResult:
+    """A restarted warm standby must be re-proven, not rolled back to by name."""
+    cfg, cloud = trial.config, trial.cloud
+    record, found = _record_problems(trial, "before current-task proof")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    live = live_color(trial)
+    standby = other(live)
+    live_version = record[f"{live}_release"]
+    standby_version = record[f"{standby}_release"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    old_warm = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    proof_release, proof_tasks = _proof(record, standby)
+    if len(old_warm) != cfg.desired or standby_version not in record["verified"] \
+       or proof_release != standby_version or not isinstance(proof_tasks, list) \
+       or len(proof_tasks) != cfg.desired:
+        raise SubmissionFailure(
+            f"no proven warm standby before current-task proof check: {standby}={standby_version}, "
+            f"tasks={len(old_warm)}, proof={proof_release!r}/{proof_tasks!r}, verified={record['verified']}")
+
+    # The release and recorded desired count stay unchanged, but the actual
+    # warm processes are deliberately replaced out of band.  A global
+    # `verified` entry remains true; only the per-task proof becomes stale.
+    service = trial.service_arn(standby)
+    cloud.ecs.update_service(cluster=trial.cluster, service=service, desiredCount=0)
+    if cloud.wait_running(trial.cluster, service, 0, timeout=120):
+        raise HarnessError(f"could not stop warm {standby} tasks for proof-reconciliation check")
+    cloud.ecs.update_service(cluster=trial.cluster, service=service, desiredCount=cfg.desired)
+    restarted = cloud.wait_running(trial.cluster, service, cfg.desired, timeout=120)
+    if len(restarted) != cfg.desired:
+        raise HarnessError(f"could not restart {standby} at the recorded desired count")
+    if restarted == old_warm:
+        raise HarnessError("the endpoint reused every stopped task; could not create stale warm-task evidence")
+
+    # A no-release reconciliation must preserve traffic and make the stale
+    # proof empty.  It must not bless the replacement tasks just because their
+    # release is in the global verified list.
+    report, failure = release_under_traffic(trial, None, "deploy-proof-reconcile")
+    if failure:
+        raise failure
+    problems = traffic_problems(report, {live_version})
+    if live_color(trial) != live:
+        problems.append(f"proof reconciliation moved production from {live} to {live_color(trial)}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("proof reconciliation started, stopped or replaced live tasks")
+    if cloud.running_tasks(trial.cluster, service) != restarted:
+        problems.append("proof reconciliation replaced the externally restarted warm tasks")
+    if trial.manifest["release"]["last_request"] != {"version": live_version, "outcome": "unchanged"}:
+        problems.append(f"proof reconciliation recorded {trial.manifest['release']['last_request']}, expected unchanged")
+    record, found = _record_problems(trial, "after stale-proof reconciliation")
+    problems += found
+    proof_release, proof_tasks = _proof(record, standby)
+    if proof_release != "" or proof_tasks != []:
+        problems.append(f"stale {standby} proof was not cleared: {proof_release!r}/{proof_tasks!r}")
+    if standby_version not in record.get("verified", []):
+        problems.append(f"reconciliation removed verified history for {standby_version}")
+    generation = record.get("generation")
+
+    # Requesting the same warm release is now a candidate verification.  It
+    # may retain the restarted tasks, but must self-test every one through
+    # preview, install current evidence, and report promoted rather than the
+    # instant-rollback outcome.
+    report, failure = release_under_traffic(trial, standby_version, "deploy-proof-reprove")
+    if failure:
+        raise failure
+    problems += traffic_problems(report, {live_version, standby_version})
+    if not single_changeover(report, live_version, standby_version):
+        problems.append("re-proven warm standby switched production back after first serving the target release")
+    if live_color(trial) != standby:
+        problems.append(f"re-proven warm standby did not become live {standby}")
+    if cloud.running_tasks(trial.cluster, service) != restarted:
+        problems.append("re-proving a warm standby restarted tasks instead of proving the current set")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("re-proving a warm standby replaced the former live tasks")
+    if trial.manifest["release"]["last_request"] != {"version": standby_version, "outcome": "promoted"}:
+        problems.append(f"stale-evidence request recorded {trial.manifest['release']['last_request']}, expected promoted")
+    record, found = _record_problems(trial, "after current-task re-proof")
+    problems += found
+    if record.get("generation") != generation + 1:
+        problems.append(f"re-proven promotion changed generation {generation} -> {record.get('generation')}, expected one")
+
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.current_task_proof_reconciled", Outcome.PASS,
+        f"replacement warm {standby} tasks were not rollback-authorized by {standby_version}'s global history; "
+        f"they were self-tested through preview and promoted with fresh durable proof",
+        details={"requests": report.total, "restarted_tasks": len(restarted)},
     )
 
 

@@ -7,8 +7,10 @@
 #   = anything else           -> stage in the standby color, self-test through
 #                                the preview listener, then promote or reject
 #
-# Release state lives in infra/release.auto.tfvars.json, so it survives
-# between runs and a standalone `terraform plan` agrees with the last run.
+# Release state and the current-task verification evidence live in the cloud
+# release record.  infra/release.auto.tfvars.json is only the local cache
+# Terraform auto-loads so a standalone `terraform plan` agrees with the
+# last run.
 set -Eeuo pipefail
 
 CONFIG_PATH="/workspace/config/config.json"
@@ -173,6 +175,12 @@ fi
 # verifier can hand us a fresh copy with only Terraform state kept).
 PREV_GEN=0
 VERIFIED=$(jq -cn --arg r "$INITIAL" '[$r]')
+# A proof is deliberately attached to a *color's current tasks*, rather than
+# merely to a release name.  It lets a later controller distinguish an intact
+# warm standby from one an operator restarted or re-created.  An empty proof
+# is safe: it means the release may run behind preview but must be proven
+# again before it can be promoted.
+PROOFS='{"blue":{"release":"","tasks":[]},"green":{"release":"","tasks":[]}}'
 if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
   # An idle color's release is not checked (it may name anything); any known
   # release will do for its task definition.
@@ -184,9 +192,22 @@ if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
     <<<"$RECORD" > "$STATE_FILE"
   PREV_GEN=$(jq -r '.generation.N' <<<"$RECORD")
   VERIFIED=$(jq -c '[.verified.L[].S] | unique' <<<"$RECORD")
+  PROOFS=$(jq -c '
+      def proof($c): {
+        release: (.[$c + "_proof_release"].S // ""),
+        tasks: [(.[$c + "_proof_tasks"].L // [])[] | select(type == "object" and (.S | type == "string")) | .S]
+      };
+      {blue: proof("blue"), green: proof("green")}' <<<"$RECORD")
   log "release state restored from the release record (generation $PREV_GEN, verified $VERIFIED)"
 fi
 is_verified() { jq -e --arg r "$1" 'any(.[]; . == $r)' <<<"$VERIFIED" >/dev/null; }
+set_proof() {  # set_proof <color> <release> <JSON array of task identities>
+  PROOFS=$(jq -c --arg c "$1" --arg r "$2" --argjson tasks "$3" \
+    '.[$c] = {release: $r, tasks: ($tasks | unique | sort)}' <<<"$PROOFS")
+}
+clear_proof() {  # clear_proof <color>
+  PROOFS=$(jq -c --arg c "$1" '.[$c] = {release: "", tasks: []}' <<<"$PROOFS")
+}
 
 if [ ! -s "$STATE_FILE" ]; then
   FIRST_DEPLOY=true
@@ -393,29 +414,77 @@ wait_idle() {  # wait_idle <color>: the color runs no tasks
   log "$1 is idle"
 }
 
-# selftest <color> <version>: every candidate task passes, through preview.
-# 503 warming_up is not a verdict: that task is asked again later.
-selftest() {
-  local color="$1" version="$2" deadline=$(( $(date +%s) + 180 )) seen=""
+# observe_tasks <url> <color> <version> <seconds>:
+# collects the identities served by a ready endpoint.  Seeing DESIRED distinct
+# identities while the target group is healthy establishes the current warm
+# task set without treating health as a correctness check.
+observe_tasks() {
+  local url="$1" color="$2" version="$3" deadline=$(( $(date +%s) + $4 ))
+  local -a seen=()
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    local code task v body
-    code=$(probe "$PREVIEW_URL" /release/selftest); task=$(header X-BeaconFare-Task); v=$(header X-BeaconFare-Version)
+    local code task v c body present=false
+    code=$(probe "$url" /release); task=$(header X-BeaconFare-Task)
+    v=$(header X-BeaconFare-Version); c=$(header X-BeaconFare-Color)
     body=$(cat "$WORK/b" 2>/dev/null || true)
-    if [ "$v" != "$version" ]; then sleep 1; continue; fi
+    if [ "$code" = "200" ] && [ -n "$task" ] && [ "$v" = "$version" ] && [ "$c" = "$color" ] \
+       && jq -e --arg t "$task" --arg v "$version" --arg c "$color" \
+            '.task == $t and .version == $v and .color == $c' <<<"$body" >/dev/null 2>&1; then
+      for present in "${seen[@]}"; do [ "$present" = "$task" ] && break; done
+      [ "$present" = "$task" ] || seen+=("$task")
+      if [ "${#seen[@]}" -eq "$DESIRED" ]; then
+        printf '%s\n' "${seen[@]}" | jq -R . | jq -cs 'unique | sort'
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# proof_matches <url> <color> <version>: a proof is current only when its
+# release and every recorded task identity equal the independently observed
+# warm task set.  A stale proof is never a rollback authorization.
+proof_matches() {
+  local url="$1" color="$2" version="$3" actual expected
+  expected=$(jq -c --arg c "$color" '.[$c]' <<<"$PROOFS")
+  jq -e --arg v "$version" --argjson n "$DESIRED" \
+    '.release == $v and (.tasks | type == "array" and length == $n and unique == .)' \
+    >/dev/null 2>&1 <<<"$expected" || return 1
+  actual=$(observe_tasks "$url" "$color" "$version" 45) || return 1
+  [ "$actual" = "$(jq -c '.tasks | unique | sort' <<<"$expected")" ]
+}
+
+# selftest <url> <color> <version>: every candidate task passes through the
+# supplied listener.  503 warming_up is not a verdict.  On success it leaves
+# SELFTEST_TASKS as the exact set that passed, suitable for durable evidence.
+SELFTEST_TASKS='[]'
+selftest() {
+  local url="$1" color="$2" version="$3" deadline=$(( $(date +%s) + 180 ))
+  local -a seen=()
+  SELFTEST_TASKS='[]'
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    local code task v c body present=false
+    code=$(probe "$url" /release/selftest); task=$(header X-BeaconFare-Task)
+    v=$(header X-BeaconFare-Version); c=$(header X-BeaconFare-Color)
+    body=$(cat "$WORK/b" 2>/dev/null || true)
+    if [ "$v" != "$version" ] || [ "$c" != "$color" ] || [ -z "$task" ]; then sleep 1; continue; fi
     if [ "$code" = "503" ] && jq -e '.code == "warming_up"' <<<"$body" >/dev/null 2>&1; then
       sleep 2; continue
     fi
-    if [ "$code" != "200" ] || ! jq -e '.passed == true' <<<"$body" >/dev/null 2>&1; then
+    if [ "$code" != "200" ] || ! jq -e --arg t "$task" --arg v "$version" --arg c "$color" \
+         '.passed == true and .task == $t and .version == $v and .color == $c' <<<"$body" >/dev/null 2>&1; then
       log "selftest FAILED on $task ($code): ${body:0:400}"
       return 1
     fi
-    case " $seen " in *" $task "*) ;; *) seen="$seen $task" ;; esac
-    if [ "$(wc -w <<<"$seen")" -ge "$DESIRED" ]; then
-      log "selftest passed on every task:$seen"
+    for present in "${seen[@]}"; do [ "$present" = "$task" ] && break; done
+    [ "$present" = "$task" ] || seen+=("$task")
+    if [ "${#seen[@]}" -eq "$DESIRED" ]; then
+      SELFTEST_TASKS=$(printf '%s\n' "${seen[@]}" | jq -R . | jq -cs 'unique | sort')
+      log "selftest passed on every task: $(jq -r '.[]' <<<"$SELFTEST_TASKS" | tr '\n' ' ')"
       return 0
     fi
   done
-  log "selftest could not reach $DESIRED distinct warm $version tasks (saw:$seen)"
+  log "selftest could not reach $DESIRED distinct warm $version tasks (saw:${seen[*]})"
   return 1
 }
 
@@ -449,6 +518,26 @@ if [ "$STANDBY_COUNT" -gt 0 ]; then
   wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION" 180 || log "standby $STANDBY_COLOR is not serving $STANDBY_VERSION"
 fi
 
+# Reconcile current-task evidence before making a release decision.  The live
+# color must retain an attestation; on first deployment or after an external
+# live-task restart it is safe to rebuild it through production because that
+# release is already the recorded, verified live release.  A standby never
+# gains proof merely by running: a changed or malformed proof is cleared, so
+# requesting it will take the preview self-test path instead of rollback.
+if ! proof_matches "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION"; then
+  log "live $LIVE_COLOR has no current-task proof; rebuilding it through production"
+  selftest "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION" || die "recorded live $LIVE_COLOR/$LIVE_VERSION did not self-test"
+  set_proof "$LIVE_COLOR" "$LIVE_VERSION" "$SELFTEST_TASKS"
+fi
+if [ "$STANDBY_COUNT" -gt 0 ]; then
+  if ! proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
+    log "standby $STANDBY_COLOR proof is absent or stale; it is not a rollback target"
+    clear_proof "$STANDBY_COLOR"
+  fi
+else
+  clear_proof "$STANDBY_COLOR"
+fi
+
 OUTCOME=unchanged
 $FIRST_DEPLOY && OUTCOME=initial
 
@@ -458,11 +547,40 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
   standby_tg=$(jq -r --arg c "$STANDBY_COLOR" '.[$c]' <<<"$TG_ARNS")
   if [ "$REQUESTED" = "$STANDBY_VERSION" ] && [ "$STANDBY_COUNT" = "$DESIRED" ] && is_verified "$REQUESTED" \
      && [ "$(running_tasks "$standby_svc")" = "$DESIRED" ] && [ "$(healthy_targets "$standby_tg")" -ge "$DESIRED" ]; then
-    log "rollback: $STANDBY_COLOR already runs $REQUESTED warm; swapping listeners"
-    set_state ".live_color = \"$STANDBY_COLOR\""
-    apply
-    crash_at switched
-    OUTCOME=rolled_back
+    if proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED"; then
+      log "rollback: $STANDBY_COLOR has current evidence for $REQUESTED; swapping listeners"
+      set_state ".live_color = \"$STANDBY_COLOR\""
+      apply
+      crash_at switched
+      OUTCOME=rolled_back
+    else
+      log "warm standby $STANDBY_COLOR/$REQUESTED has no current evidence; proving it as a candidate"
+      clear_proof "$STANDBY_COLOR"
+      set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
+      apply
+      PASSED=false
+      if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360; then
+        crash_at staged
+        selftest "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" && PASSED=true
+      fi
+      if "$PASSED"; then
+        log "promoting freshly proven warm standby $REQUESTED"
+        VERIFIED=$(jq -c --arg r "$REQUESTED" '. + [$r] | unique' <<<"$VERIFIED")
+        set_proof "$STANDBY_COLOR" "$REQUESTED" "$SELFTEST_TASKS"
+        set_state ".live_color = \"$STANDBY_COLOR\""
+        apply
+        crash_at switched
+        OUTCOME=promoted
+      else
+        log "rejecting $REQUESTED; scaling $STANDBY_COLOR to zero"
+        VERIFIED=$(jq -c --arg r "$REQUESTED" 'map(select(. != $r))' <<<"$VERIFIED")
+        clear_proof "$STANDBY_COLOR"
+        set_state ".color_count.${STANDBY_COLOR} = 0"
+        apply
+        wait_idle "$STANDBY_COLOR"
+        OUTCOME=rejected
+      fi
+    fi
   else
     log "candidate $REQUESTED -> $STANDBY_COLOR (production stays on $LIVE_COLOR/$LIVE_VERSION)"
     set_state ".color_release.${STANDBY_COLOR} = \"$REQUESTED\" | .color_count.${STANDBY_COLOR} = $DESIRED"
@@ -470,11 +588,12 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
     PASSED=false
     if wait_serving "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" 360; then
       crash_at staged
-      selftest "$STANDBY_COLOR" "$REQUESTED" && PASSED=true
+      selftest "$PREVIEW_URL" "$STANDBY_COLOR" "$REQUESTED" && PASSED=true
     fi
     if "$PASSED"; then
       log "promoting $REQUESTED"
       VERIFIED=$(jq -c --arg r "$REQUESTED" '. + [$r] | unique' <<<"$VERIFIED")
+      set_proof "$STANDBY_COLOR" "$REQUESTED" "$SELFTEST_TASKS"
       set_state ".live_color = \"$STANDBY_COLOR\""
       apply
       crash_at switched
@@ -482,6 +601,7 @@ if [ "$REQUESTED" != "$LIVE_VERSION" ]; then
     else
       log "rejecting $REQUESTED; scaling $STANDBY_COLOR to zero"
       VERIFIED=$(jq -c --arg r "$REQUESTED" 'map(select(. != $r))' <<<"$VERIFIED")
+      clear_proof "$STANDBY_COLOR"
       set_state ".color_count.${STANDBY_COLOR} = 0"
       apply
       wait_idle "$STANDBY_COLOR"
@@ -500,6 +620,7 @@ if [ "$STANDBY_COUNT" -gt 0 ]; then
   STANDBY_REPORTED="$STANDBY_VERSION"
 else
   STANDBY_REPORTED=""
+  clear_proof "$STANDBY_COLOR"
 fi
 
 # ---- 4. release record ------------------------------------------------------------------
@@ -514,13 +635,17 @@ else
 fi
 "$LOCK_HELD" || die "the release lock is not held; refusing to write the release record"
 "${AWSCLI[@]}" dynamodb put-item --table-name "$LOCK_TABLE" --item "$(jq -c \
-    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" --argjson ver "$VERIFIED" '{
+    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" --argjson ver "$VERIFIED" --argjson proofs "$PROOFS" '{
       lock_id: {S: "release-record"}, generation: {N: ($g | tostring)},
       live_color: {S: .live_color},
       blue_release: {S: .color_release.blue}, green_release: {S: .color_release.green},
       blue_count: {N: (.color_count.blue | tostring)}, green_count: {N: (.color_count.green | tostring)},
       last_request_version: {S: $v}, last_request_outcome: {S: $o},
-      verified: {L: [$ver[] | {S: .}]}}' "$STATE_FILE")" >/dev/null \
+      verified: {L: [$ver[] | {S: .}]},
+      blue_proof_release: {S: $proofs.blue.release},
+      blue_proof_tasks: {L: [$proofs.blue.tasks[] | {S: .}]},
+      green_proof_release: {S: $proofs.green.release},
+      green_proof_tasks: {L: [$proofs.green.tasks[] | {S: .}]}}' "$STATE_FILE")" >/dev/null \
   || die "could not write the release record"
 log "release record generation $GENERATION written"
 

@@ -38,7 +38,9 @@ The contracts are under `/workspace/contracts/`:
   releases it.
 - `release-record.md` defines the release record: the release state kept in
   the cloud, which every acting run writes and from which a run on a fresh
-  worker must be able to continue.
+  worker must be able to continue. It also defines durable current-task
+  proof: a rollback target must be proven on the exact warm tasks that would
+  receive production traffic.
 - `crash-recovery.md` defines two named crash points that `deploy.sh` must
   honour when `BEACONFARE_FAULT_POINT` asks for one, what a crashed run
   leaves behind (exit `137`, its lock still held, the record untouched) and
@@ -183,9 +185,12 @@ through `deploy.sh`, after the last release.
     color, change a color's release or count, revoke releases from
     `verified`). The next run carries the edit out from the record without a
     failed request and without touching colors that already match. Only a
-    release in `verified` is rolled back to; any other standby release must
-    pass its self-test first. A record that is not a deployable state is
-    refused with `65`.
+    release in `verified` with current-task proof that matches the warm tasks
+    is rolled back to; any other standby release must pass its self-test
+    first. If a warm standby was restarted outside the controller, a
+    no-release reconciliation clears its stale proof rather than blessing it,
+    and a request must re-prove those existing tasks through preview before
+    promotion. A record that is not a deployable state is refused with `65`.
 13. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
 14. `destroy.sh` removes everything this deployment owns and nothing else.
@@ -200,7 +205,7 @@ The score is weighted by category. A run passes only at 100.
 | Exclusive release lock and side-effect-free refusals | 11 |
 | Durable release record and independent recovery | 8 |
 | Crash points and takeover recovery | 8 |
-| Operator-edited release record and proven rollback targets | 37 |
+| Operator-controlled state and current-task rollback proof | 37 |
 | Instant rollback, drift and repair, stable state | 11 |
 | Blue/green topology | 5 |
 | Product traffic | 1 |

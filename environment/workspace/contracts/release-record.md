@@ -22,6 +22,8 @@ item:
 | `last_request_version` | `S` | The version the last run acted on: the requested release, or the live release when none was requested. |
 | `last_request_outcome` | `S` | That run's outcome, as in `manifest.release.last_request.outcome`. |
 | `verified` | `L` of `S` | The releases this deployment has proven: `initial_release` from the first deployment on, plus every release promoted after passing its self-test. A release whose self-test fails is removed. Order and duplicates are not significant. Only a release in this list may be rolled back to (`release-process.md`). |
+| `blue_proof_release`, `green_proof_release` | `S` | The release whose current tasks were last proven for that color, or the empty string when the color has no current-task proof. |
+| `blue_proof_tasks`, `green_proof_tasks` | `L` of `S` | The distinct `X-BeaconFare-Task` identities that passed that color's self-test, sorted lexically. The list is empty when there is no current-task proof. |
 
 Other attributes are allowed and ignored.
 
@@ -32,8 +34,12 @@ Other attributes are allowed and ignored.
    returns, the record describes what it deployed: production forwards to
    `live_color`, each color runs its recorded count of tasks, every color
    with a non-zero count serves its recorded release, and the last-request
-   attributes equal `manifest.release.last_request`. Refused runs do not
-   touch it (see *Refusals* in `release-process.md`).
+   attributes equal `manifest.release.last_request`. The live color has a
+   proof for exactly its recorded release and its `api_desired_count` current
+   task identities. An idle color has an empty proof. A running standby may
+   have either an exact proof or an empty proof; an empty proof means it is
+   not a rollback target. Refused runs do not touch it (see *Refusals* in
+   `release-process.md`).
 2. **Generation.** The first deployment records `generation` `1`. After
    that, a run that ends with a different `live_color`, `blue_release`,
    `green_release`, `blue_count` or `green_count` than the record held when
@@ -71,7 +77,29 @@ Other attributes are allowed and ignored.
    no release requested the outcome is `unchanged` and the generation stays
    as the operator left it. A run never adds a release to `verified` just
    because it is running: an operator-placed standby release is a
-   candidate, not a rollback target, until it passes its self-test.
+   candidate, not a rollback target, until it passes its self-test. An
+   operator need not maintain the proof attributes. If its state edit changes
+   a color's release, count or tasks, the controller treats that color's old
+   proof as stale and clears it; it does not manufacture a replacement proof
+   merely by observing a running standby. A request must self-test those
+   current standby tasks before promotion.
+
+6. **Proofs bind verification to current warm tasks.** A proof is current
+   only when its release equals the color's recorded release, it contains
+   exactly `api_desired_count` distinct non-empty identities, and a fresh
+   `GET /release` sample through that color's listener observes exactly that
+   set with the expected release and color. Before a rollback the controller
+   must make this comparison through preview. It may not substitute ECS
+   desired count, target health, a task definition ARN, or `verified` for the
+   task identities. When a candidate passes, the controller retains the
+   exact self-tested set to authorize promotion and commits it with the final
+   promoted record; the named `switched` crash point still leaves the prior
+   record intact. A missing, malformed or stale
+   proof is recoverable rather than an undeployable core state: it is cleared
+   when the controller acts and routes a release request through candidate
+   verification. The first deployment, or a recorded live color whose tasks
+   were externally replaced, records a live proof after self-testing every
+   current live task through production.
 
 ## Validity
 
@@ -88,6 +116,12 @@ holds:
 - a color with a non-zero count is assigned a release that is not in
   `releases`;
 - the live color's release is not in `verified`.
+
+Missing, malformed or stale proof attributes alone do **not** make the core
+release state undeployable. They remove rollback eligibility as rule 6 says;
+the next acting run clears stale standby evidence or rebuilds evidence for the
+already verified live color. This distinction lets operators recover a
+recreated warm standby without a refusal or an unsafe rollback.
 
 A run that finds the record not deployable is **refused** with exit status
 `65` under the refusal rules in `release-process.md`: it returns within 30

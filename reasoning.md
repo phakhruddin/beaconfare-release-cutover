@@ -81,7 +81,7 @@ sequenceDiagram
 flowchart TD
     R[BEACONFARE_RELEASE=R] --> A{R live?}
     A -- yes --> U[apply current state: repair only<br/>outcome unchanged]
-    A -- no --> W{R is warm standby<br/>at N running tasks?}
+    A -- no --> W{R is warm standby at N<br/>with matching task proof?}
     W -- yes --> RB[rollback: swap listeners only<br/>outcome rolled_back]
     W -- no --> S[apply: standby color := R × N<br/>production untouched]
     S --> P[wait: preview serves R from N healthy targets]
@@ -112,38 +112,59 @@ sequenceDiagram
 ### 4. Rollback and repair
 
 Rollback is flow 2's middle branch: the listeners swap back onto the tasks
-that were already running, and the verifier proves it by comparing task ARNs
-before and after. Repair deletes the preview listener and the standby ECS
-service; a `deploy.sh` run with no release requested re-applies the recorded
-state, which recreates both without touching the live service or the
-production listener.
+that were already running, but only after independently sampling exactly the
+task identities in their durable preview proof. The verifier proves both the
+task-ARN reuse and the evidence match. If an operator restarts a warm service
+at the same release and desired count, a no-release reconciliation clears the
+stale proof; a request then uses the candidate path to self-test those new
+warm tasks before promotion. Repair deletes the preview listener and the
+standby ECS service; a `deploy.sh` run with no release requested re-applies
+the recorded state, which recreates both without touching the live service or
+the production listener.
 
 ### 5. State
 
-`deploy.sh` keeps `live_color`, `color_release` and `color_count` in
-`infra/release.auto.tfvars.json`. That file is the durable record between
-runs and is auto-loaded, so the verifier's standalone `plan -refresh=false`
-agrees with the last run. Leftover release state without Terraform state
-(from the agent's own testing) is discarded on the first verifier run.
+The cloud record holds `live_color`, `color_release`, `color_count`, global
+release history and a per-color proof of the exact task identities that
+self-tested. `infra/release.auto.tfvars.json` is the local cache auto-loaded
+by Terraform so a standalone `plan -refresh=false` agrees with the last run.
+Leftover release state without Terraform state (from the agent's own testing)
+is discarded on the first verifier run.
 
 ## Score
 
-Nineteen obligations, 100 points. Only 100 passes.
+Twenty obligations, 100 points. Only 100 passes.
 
-### v0.11.0: the operator edits the record, and rollback targets must be proven
+### v0.12.0: a verification result must belong to the tasks that will receive traffic
 
-Realm runs on v0.10.x reached 100 with every model: every check exercised a
-record that only the controller itself had written. Real release records
-are also edited by people. v0.11.0 makes three additions to the public
-contract, carrying 37 of the 100 points (older, saturated obligations were
-scaled down):
+Realm version 22 exercised a rich public record contract but still reached
+100 with every non-Astra evaluator. v0.11.0 had correctly made release
+history operator-editable, yet a controller could still equate “this release
+was proven once” with “these warm tasks are the ones that were proven.” That
+is unsafe after a service restart, recovery, or operator re-provisioning:
+the release name and target health remain unchanged while the actual tasks
+behind preview have changed.
+
+v0.12.0 retains v0.11.0's operator controls and adds a single composable
+invariant carrying 37 of 100 points: rollback authorization is a durable,
+independently observable proof of the **current task set**. It is challenging
+because the controller must reconcile evidence without accidentally adopting
+runtime drift or turning an operator's standby into production, but it is
+fully public and uses only the documented listener responses.
 
 - **`verified`** (`release-record.md`): the record lists the releases this
   deployment has proven (the initial release, then every release promoted
   after passing its self-test; a failed self-test removes one). A rollback
-  (`release-process.md`, case 2) now also requires the standby's release to
-  be in `verified`; any other standby release is a candidate and must pass
-  its self-test before it serves production.
+  requires global release history but that history alone is deliberately not
+  enough.
+- **Per-color current-task proof**: a controller records the exact distinct
+  `X-BeaconFare-Task` identities that passed self-test, plus their release.
+  Immediately before rollback it independently collects all warm task
+  identities through preview and compares the sets. A restarted warm standby
+  has stale evidence even when it runs the same verified release at the same
+  desired count. A no-release run clears that proof; a request retains the
+  running tasks, self-tests them through preview, records fresh evidence and
+  reports `promoted`, never `rolled_back`.
 - **Operator edits** (rule 5): between runs an operator may switch
   `live_color`, change a color's release or count, or revoke releases from
   `verified`, raising the generation. The next run must carry the edit out
@@ -160,6 +181,10 @@ place the defective release in the standby and then requests it: a
 controller that treats "the standby runs R warm" as a rollback serves the
 defective release. It then revokes a good release and requires the request
 to be proven (outcome `promoted`, `verified` restored).
+`lifecycle.current_task_proof_reconciled` restarts a previously proven warm
+standby without changing its release or count. It requires reconciliation to
+clear stale evidence, then requires the release request to self-test exactly
+those replacement warm tasks and promote them without starting another set.
 `lifecycle.undeployable_record_refused` plants four undeployable records.
 Every check is deterministic: the verifier performs the operator's edits
 itself, between runs, with the lock free.
@@ -322,13 +347,14 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 |---|---:|---|
 | `lifecycle.crash_points_recovered` | 8 | With a warm pair, the defective release is requested with `BEACONFARE_FAULT_POINT=staged` under traffic: the run must exit `137` with the candidate warm in the standby color behind preview, production and its tasks untouched, its own lock item left with a live lease, the record's documented attributes and `manifest.json` unchanged. A no-release run under that lease must exit `75` and change nothing. After the verifier expires the lease, a no-release run must take over, put the recorded standby release back at its count, keep every live task, record `unchanged`, keep the generation and release the lock. Then the warm standby's release is requested with `switched`: exit `137` with production on exactly the standby tasks, record and manifest unchanged; after the lease is expired a no-release run must put the recorded routing back and start or stop no task in either color. No production request may fail. |
 
-### Operator-edited release record and proven rollback targets — 37
+### Operator-controlled state and current-task rollback proof — 37
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.operator_directives_applied` | 14 | The operator points `live_color` at the warm standby; a no-release run must switch listeners onto exactly those tasks (nothing started or stopped, single changeover, zero failures). The operator then sets the new standby's count to 0 (it must go idle, manifest standby `null`) and back to `api_desired_count` with a verified release (it must run warm behind preview). Live tasks never change; every run records `unchanged`, keeps the operator's generation and leaves an accurate record. |
-| `lifecycle.unverified_standby_proven` | 13 | The operator places the defective release in the standby; a no-release run stages it behind preview without adding it to `verified`. Requesting it must take the candidate path: self-test, rejection, standby to 0, generation +1, production never answered by it. The operator then revokes the good standby release from `verified` and places it in the standby; requesting it must be proven and promoted (outcome `promoted`, not `rolled_back`), with `verified` restored and the old live tasks kept warm. |
-| `lifecycle.undeployable_record_refused` | 10 | Four undeployable records (live color idle, a count of `api_desired_count`+1, live release missing from `verified`, an unknown release on a running color while a valid release is requested) are each refused with `65` within 30 s, changing no record, lock, file, manifest, listener, count, task definition or task. With the record restored, the next run changes nothing and keeps the generation. |
+| `lifecycle.operator_directives_applied` | 9 | The operator points `live_color` at the warm standby; a no-release run must switch listeners onto exactly those tasks (nothing started or stopped, single changeover, zero failures). The operator then sets the new standby's count to 0 (it must go idle, manifest standby `null`) and back to `api_desired_count` with a verified release (it must run warm behind preview). Live tasks never change; every run records `unchanged`, keeps the operator's generation and leaves an accurate record. |
+| `lifecycle.unverified_standby_proven` | 8 | The operator places the defective release in the standby; a no-release run stages it behind preview without adding it to `verified`. Requesting it must take the candidate path: self-test, rejection, standby to 0, generation +1, production never answered by it. The operator then revokes the good standby release from `verified` and places it in the standby; requesting it must be proven and promoted (outcome `promoted`, not `rolled_back`), with `verified` restored and the old live tasks kept warm. |
+| `lifecycle.current_task_proof_reconciled` | 13 | The verifier restarts a proven warm standby out of band while keeping its release and desired count. A no-release run must keep live traffic and tasks intact, retain global history but clear the stale standby proof. Requesting that same release must self-test every already-running replacement task through preview, switch once with outcome `promoted` (not `rolled_back`), and record an exact proof that independently sampled task identities match. |
+| `lifecycle.undeployable_record_refused` | 7 | Four undeployable records (live color idle, a count of `api_desired_count`+1, live release missing from `verified`, an unknown release on a running color while a valid release is requested) are each refused with `65` within 30 s, changing no record, lock, file, manifest, listener, count, task definition or task. With the record restored, the next run changes nothing and keeps the generation. |
 
 ### Instant rollback, drift and repair, stable state — 11
 
@@ -395,6 +421,8 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 | Trust the local state cache, or the listeners, after a crash | crash (the crashed run's half-finished candidate or swapped listeners are adopted) |
 | Redeploy every color on recovery | crash (tasks of a color already on its recorded release are replaced) |
 | Treat "the standby runs R warm" as enough for a rollback | unverified standby (the operator-placed defective release goes live) |
+| Treat a release-level `verified` entry, target health or desired count as proof of restarted warm tasks | current-task proof (the stale standby is incorrectly rolled back instead of re-proven) |
+| Rebuild standby proof on a no-release reconciliation merely because tasks are healthy | current-task proof (operator-created warm tasks become rollback-authorized without preview self-test) |
 | Add every running release to `verified`, or never maintain it | unverified standby / validity |
 | Ignore operator edits, or trust the local cache over an edited record | operator directives (listeners, counts or releases not carried out) |
 | Bump the generation when carrying out an operator edit | operator directives (generation must stay as the operator left it) |

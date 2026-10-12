@@ -93,15 +93,17 @@ The very first deployment puts `initial_release` live in one color with
    repaired, and production keeps answering while that happens. Outcome
    `unchanged`.
 2. **R is the standby release, the standby color runs
-   `api_desired_count` tasks, and R is in the record's `verified` list**
-   (`release-record.md`). This is a **rollback**. Switch production to
-   the standby color by changing where the listeners forward. Do not start
-   new tasks for R: the tasks that were standby become live. The color that
-   was live becomes standby, still running its release at
-   `api_desired_count`. Outcome `rolled_back`.
+   `api_desired_count` tasks, R is in the record's `verified` list, and its
+   current-task proof matches those warm tasks** (`release-record.md`). This
+   is a **rollback**. Switch production to the standby color by changing
+   where the listeners forward. Do not start new tasks for R: the tasks that
+   were standby become live. The color that was live becomes standby, still
+   running its release at `api_desired_count`. Outcome `rolled_back`.
 3. **Otherwise R is a candidate.** This includes a standby release that is
-   not in `verified`, for example one an operator placed there: it is never
-   rolled back to without proof. Deploy R into the standby color at
+   not in `verified`, or one whose warm tasks were replaced after it was
+   proved, for example when an operator placed or restarted it there: it is
+   never rolled back to without proof of its *current* tasks. Deploy R into
+   the standby color at
    `api_desired_count` tasks, replacing whatever the standby color ran (when
    the standby color already runs R warm at that count, its tasks may be
    kept).
@@ -137,11 +139,43 @@ A candidate passes only if **every** candidate task answers
 listener reports version *R*. `/health/ready` is not verification: a release
 with a pricing regression is perfectly healthy. The self-test response names
 the task that answered in `task` and in the `X-BeaconFare-Task` header, so
-you can tell when every task has been covered.
+you can tell when every task has been covered. The controller retains that
+exact distinct task-identity set to authorize the promotion and commits it as
+the candidate color's current-task proof with the final promotion outcome.
+At the named `switched` crash point the prior record still remains intact, as
+`crash-recovery.md` requires.
 
 One of the later releases in `releases` carries a pricing regression. Which
 one is not published and changes between environments. Only its self-test
 reveals it.
+
+## Current-task proof and rollback eligibility
+
+`verified` says a release image has passed before; it does not by itself say
+that the particular warm tasks now behind the preview listener were the tasks
+that passed. The release record therefore carries one proof per color (see
+`release-record.md`): a release and the exact set of `X-BeaconFare-Task`
+identities that passed the preview self-test.
+
+- Just before a rollback, the controller independently samples
+  `GET /release` through preview until it has seen `api_desired_count`
+  distinct, ready task identities. It may roll back only when that set,
+  release and color exactly equal the standby proof. A count or target-health
+  check alone is not enough.
+- A missing, malformed or stale standby proof is safe but not sufficient. A
+  request for that release follows the candidate path, self-tests every
+  current task through preview, and records a replacement proof before a
+  `promoted` outcome. It may retain already-running matching tasks while it
+  proves them.
+- A no-release reconciliation never grants a standby proof merely because
+  tasks happen to run. If it observes a mismatch it clears the stale proof
+  and leaves the release behind preview. This lets an operator re-create a
+  warm standby without silently turning it into a rollback target.
+- The recorded live color must also have current-task proof. On the first
+  deployment, or after an out-of-band replacement of the already verified
+  live tasks, the controller may rebuild that proof by self-testing every
+  live task through production before returning. This does not change routing
+  or make an unverified release live.
 
 ## The recorded state is the truth
 
@@ -152,7 +186,8 @@ task counts can be changed outside `deploy.sh`, for example by an operator.
 A run with no release requested puts everything back to the recorded state:
 production forwards to the recorded live color, preview to the recorded
 standby color, and each color runs its recorded release at its recorded task
-count. It does this without failing a production request and without
+count. It also reconciles current-task proof under the rules above. It does
+this without failing a production request and without
 stopping or replacing a task of the recorded live color. Its outcome is
 `unchanged`. The same holds after a controller crashed halfway through a
 release (`crash-recovery.md`): the cloud then shows the crashed run's

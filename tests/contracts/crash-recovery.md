@@ -32,9 +32,9 @@ is an acceptable way to do it), and without any cleanup:
 
 - the release lock item is **left in place**, with this run as `holder` and
   its lease still live: a crashed controller cannot release its lock;
-- the release record's attributes listed in `release-record.md` are exactly
-  as they were when the run started (other attributes, for example your own
-  intent markers, may have changed);
+- every release-record attribute documented in `release-record.md`, including
+  the per-color current-task proof, is exactly as it was when the run started
+  (other attributes, for example your own intent markers, may have changed);
 - `manifest.json` is not written;
 - nothing the run did in the cloud is undone: the staged candidate keeps
   running, switched listeners stay switched.

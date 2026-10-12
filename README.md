@@ -73,6 +73,13 @@ Traps that carry the difficulty:
     verified (for example the defective one, placed by an operator) is a
     candidate, never a rollback target. A record that is not a deployable
     state is refused with `65`.
+15. **Verification belongs to the warm tasks, not just the release name.** A
+    per-color proof records the exact task identities that passed self-test.
+    Restarting a verified standby out of band makes its proof stale; a
+    no-release reconciliation clears it, and a request must prove those
+    already-running tasks through preview before it may promote. Desired
+    count, target health and global verification history cannot authorize
+    that rollback.
 
 ## Layout
 
@@ -82,7 +89,7 @@ Traps that carry the difficulty:
 | `reasoning.md` | Design, flows and score rationale for reviewers. |
 | `environment/` | Agent workspace image, supplied release images, public contracts. `runtime.sh` also starts one idle `release-keeper` container per release image (labelled into the compose project, removed by `down --remove-orphans`) so no release image can be removed from the shared Docker daemon before it is deployed. |
 | `environment/workspace/contracts/release-process.md` | The product contract. |
-| `environment/workspace/contracts/release-record.md` | The cloud release record every acting run writes and a fresh worker continues from. |
+| `environment/workspace/contracts/release-record.md` | The cloud release record, including current-task proof every fresh worker continues from. |
 | `environment/workspace/contracts/crash-recovery.md` | Named crash points, what a crashed run leaves behind, and takeover recovery. |
 | `environment/workspace/contracts/release-lock.md` | The exclusive release lock every `deploy.sh` run takes, respects (exit 75) and releases. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |

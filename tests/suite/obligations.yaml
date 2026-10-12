@@ -40,11 +40,12 @@
     },
     {
       "id": "operator_record",
-      "label": "Operator-edited release record and proven rollback targets",
+      "label": "Operator-controlled state and current-task rollback proof",
       "weight": 37,
       "obligations": [
         "lifecycle.operator_directives_applied",
         "lifecycle.unverified_standby_proven",
+        "lifecycle.current_task_proof_reconciled",
         "lifecycle.undeployable_record_refused"
       ]
     },
@@ -332,7 +333,7 @@
     {
       "id": "lifecycle.operator_directives_applied",
       "plane": "lifecycle",
-      "weight": 14,
+      "weight": 9,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair and rule 5 of release-record.md (operators may edit the record)",
@@ -349,7 +350,7 @@
     {
       "id": "lifecycle.unverified_standby_proven",
       "plane": "lifecycle",
-      "weight": 13,
+      "weight": 8,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the verified list in release-record.md and the rollback rule in release-process.md",
@@ -364,9 +365,25 @@
       "deadline_seconds": 3000
     },
     {
+      "id": "lifecycle.current_task_proof_reconciled",
+      "plane": "lifecycle",
+      "weight": 13,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "a verified warm blue/green pair whose record contains current-task proof for both colors",
+      "when": "the verifier stops and restarts the warm standby at the same release and count outside deploy.sh, runs deploy with no release, then requests that standby release under continuous traffic",
+      "then": [
+        "the no-release reconciliation keeps production and its tasks intact, retains verified history, and clears rather than refreshes the standby proof",
+        "the release request is not an instant rollback: it self-tests every restarted warm task through preview, preserves those already-running tasks, switches once, and records promoted",
+        "the resulting record contains the target release and exactly the distinct current X-BeaconFare-Task identities for its live color; independently sampled listener identities equal that evidence",
+        "no production request fails and the generation advances exactly once for the promotion"
+      ],
+      "deadline_seconds": 2400
+    },
+    {
       "id": "lifecycle.undeployable_record_refused",
       "plane": "lifecycle",
-      "weight": 10,
+      "weight": 7,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the Validity rules in release-record.md and the refusal rules in release-process.md",
