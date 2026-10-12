@@ -247,9 +247,15 @@ log "prefix=$RESOURCE_PREFIX live=$LIVE_COLOR/$LIVE_VERSION requested=$REQUESTED
 # start-up failures on a loaded host (runtime.md). They occur before Terraform
 # can plan or change resources, so the retry starts from the same state.
 retryable_provider_startup_failure() {
-  grep -q 'timeout while waiting for plugin to start' "$WORK/tf.out" \
-    || { grep -q 'Failed to load plugin schemas' "$WORK/tf.out" \
-         && grep -q 'GetProviderSchema request was cancelled' "$WORK/tf.out"; }
+  # Terraform can wrap the timeout across colored diagnostic lines. Require
+  # each exact fragment and the surrounding schema/instantiate-provider form,
+  # so an unrelated timeout is not retried as a provider start-up failure.
+  { grep -Fq 'Failed to load plugin schemas' "$WORK/tf.out" \
+      && grep -Fq 'failed to instantiate provider' "$WORK/tf.out" \
+      && grep -Fq 'timeout while' "$WORK/tf.out" \
+      && grep -Fq 'waiting for plugin to start' "$WORK/tf.out"; } \
+    || { grep -Fq 'Failed to load plugin schemas' "$WORK/tf.out" \
+         && grep -Fq 'GetProviderSchema request was cancelled' "$WORK/tf.out"; }
 }
 
 tf() {

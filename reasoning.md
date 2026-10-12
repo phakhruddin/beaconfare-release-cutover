@@ -242,10 +242,12 @@ error, and the defective test recovers with a correct release that is not
 live.
 
 A later loaded-host run also exposed the equivalent pre-apply provider-schema
-startup cancellation (`Failed to load plugin schemas` / `GetProviderSchema
-request was cancelled`). `runtime.md` now publishes that exact transient and
-the reference retries it with the same bounded policy; resource, plan and
-application errors remain non-retryable.
+startup forms: `Failed to load plugin schemas` followed by either a
+line-wrapped `failed to instantiate provider` / `timeout while waiting for
+plugin to start`, or `GetProviderSchema request was cancelled`. `runtime.md`
+now publishes those exact transients and the reference retries them with the
+same bounded policy; resource, plan and application errors remain
+non-retryable.
 
 The reference also folds a known-new candidate into its first convergence
 instead of first applying the unchanged record and then applying the same
