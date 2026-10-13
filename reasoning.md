@@ -262,15 +262,17 @@ fresh-worker contract retains that state file and `terraform output` reads the
 same object; this removes provider process start-up from a post-success,
 read-only step without changing any deployed value or release decision.
 
-When that fresh worker restores a valid cloud record but lacks the private
-per-worker marker written by a successful controller run, it independently
-self-tests an intact warm standby through preview if its current-task proof
-cannot be observed. This is deliberately not inferred from the release-cache
-file, which a handed-over source may contain stale. It rebuilds durable
-evidence for the already-running tasks and keeps rollback semantics after a
-handoff. The normal cached-worker reconciliation remains deliberately strict:
-after an operator restarts warm tasks, it clears the old proof instead of
-blessing replacements merely because they have the same release name.
+The verifier's fresh-worker handoff now genuinely discards generated release
+cache, generated config, manifest and private cache-marker files before it
+restores only `terraform.tfstate`; a submitted source may contain stale copies
+of those runtime artifacts. When the fresh worker restores a valid cloud
+record without that local cache, it independently self-tests an intact warm
+standby through preview if its current-task proof cannot be observed. It
+rebuilds durable evidence for the already-running tasks and keeps rollback
+semantics after a handoff. The normal cached-worker reconciliation remains
+deliberately strict: after an operator restarts warm tasks, it clears the old
+proof instead of blessing replacements merely because they have the same
+release name.
 
 ### v0.9.0: the release state lives in the cloud
 
