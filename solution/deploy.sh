@@ -175,12 +175,15 @@ fi
 # verifier can hand us a fresh copy with only Terraform state kept).
 PREV_GEN=0
 VERIFIED=$(jq -cn --arg r "$INITIAL" '[$r]')
-# Keep this before restoring the record cache. A missing local cache plus a
-# valid record/state pair is the fresh-worker handoff, not ordinary drift.
-# Such a worker must rebuild enough current-task evidence for its intact warm
-# standby to remain an immediate rollback target.
+# Keep this before restoring the record cache. The marker is written only by a
+# successful controller run in this working copy. The verifier's fresh-worker
+# handoff preserves Terraform state but not this private marker, even when the
+# submitted source contains a stale release cache. Such a worker must rebuild
+# enough current-task evidence for its intact warm standby to remain an
+# immediate rollback target.
+CACHE_MARKER="${INFRA_DIR}/.beaconfare-record-cache"
 FRESH_RECORD_WORKER=false
-if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ] && [ ! -s "$STATE_FILE" ]; then
+if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ] && [ ! -f "$CACHE_MARKER" ]; then
   FRESH_RECORD_WORKER=true
 fi
 # A proof is deliberately attached to a *color's current tasks*, rather than
@@ -759,3 +762,4 @@ jq -n \
   }' > "$MANIFEST_PATH"
 
 log "deploy complete: outcome=$OUTCOME live=$LIVE_COLOR/$LIVE_VERSION standby=$STANDBY_COLOR/${STANDBY_REPORTED:-idle}"
+touch "$CACHE_MARKER"
