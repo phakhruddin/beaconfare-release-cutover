@@ -55,7 +55,9 @@ Other attributes are allowed and ignored.
    been lost: with no release requested it changes nothing that is serving
    and starts or stops no task, a warm standby stays warm and can still be
    rolled back to, and the standalone plan still shows nothing to create or
-   delete.
+   delete. It may self-test already-running warm tasks through preview to
+   reconstruct their current-task proof; that observation does not start,
+   stop or route any task.
 
 4. **A crash leaves the record behind.** A run that stops at a requested
    crash point (`crash-recovery.md`) does not change the attributes above.

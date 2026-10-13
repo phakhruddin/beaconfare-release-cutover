@@ -175,6 +175,14 @@ fi
 # verifier can hand us a fresh copy with only Terraform state kept).
 PREV_GEN=0
 VERIFIED=$(jq -cn --arg r "$INITIAL" '[$r]')
+# Keep this before restoring the record cache. A missing local cache plus a
+# valid record/state pair is the fresh-worker handoff, not ordinary drift.
+# Such a worker must rebuild enough current-task evidence for its intact warm
+# standby to remain an immediate rollback target.
+FRESH_RECORD_WORKER=false
+if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ] && [ ! -s "$STATE_FILE" ]; then
+  FRESH_RECORD_WORKER=true
+fi
 # A proof is deliberately attached to a *color's current tasks*, rather than
 # merely to a release name.  It lets a later controller distinguish an intact
 # warm standby from one an operator restarted or re-created.  An empty proof
@@ -574,8 +582,22 @@ if ! proof_matches "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION"; then
 fi
 if [ "$REQUESTED" = "$LIVE_VERSION" ] && [ "$STANDBY_COUNT" -gt 0 ]; then
   if ! proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
-    log "standby $STANDBY_COLOR proof is absent or stale; it is not a rollback target"
-    clear_proof "$STANDBY_COLOR"
+    if "$FRESH_RECORD_WORKER"; then
+      # No local cache survived, but the cloud record says this is an intact
+      # warm standby. Prove these existing preview tasks independently rather
+      # than treating cache loss as a task restart. Ordinary reconciliation
+      # below still clears evidence after an operator restart.
+      log "fresh worker is rebuilding proof for warm $STANDBY_COLOR/$STANDBY_VERSION"
+      if selftest "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
+        set_proof "$STANDBY_COLOR" "$STANDBY_VERSION" "$SELFTEST_TASKS"
+      else
+        log "fresh worker could not prove warm $STANDBY_COLOR; it is not a rollback target"
+        clear_proof "$STANDBY_COLOR"
+      fi
+    else
+      log "standby $STANDBY_COLOR proof is absent or stale; it is not a rollback target"
+      clear_proof "$STANDBY_COLOR"
+    fi
   fi
 elif [ "$STANDBY_COUNT" -eq 0 ]; then
   clear_proof "$STANDBY_COLOR"
