@@ -175,7 +175,11 @@ through `deploy.sh`, after the last release.
     moves by exactly one when the recorded state changes. When the submission
     directory is replaced by a fresh copy (only Terraform state kept), the
     next runs continue from the record: nothing serving changes, no task
-    starts or stops, and the warm standby can still be rolled back to.
+    starts or stops, and the warm standby can still be rolled back to. If its
+    exact current-task proof is missing or stale, the no-release recovery run
+    independently self-tests the existing preview tasks and records that
+    proof; the later warm-release request must be `rolled_back`, not a
+    cache-loss `promoted` candidate.
 11. A run asked to crash at `staged` or `switched` stops there with exit
     `137`, leaving its lock held and the release record untouched. Once its
     lease is expired, the next run restores the recorded state, not what the

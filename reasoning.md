@@ -135,6 +135,19 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.13.0: fresh workers recover task proof, not merely release names
+
+Version 23's panel runs all reached 92: after a fresh-worker handoff, each
+kept traffic healthy but treated a warm standby with no exact task proof as a
+candidate and reported `promoted` instead of recovering proof and reporting
+`rolled_back`. The public instruction, record contract and executable
+obligation now state the complete handoff invariant: a no-release fresh-worker
+run independently proves the existing preview tasks when evidence is absent or
+stale, persists that exact set without changing serving traffic, and a later
+request listener-swaps onto those tasks as a rollback. This is the same
+current-task safety rule as ordinary rollback, made explicit at the cache-loss
+boundary rather than relying on an inference from separate paragraphs.
+
 ### v0.12.0: a verification result must belong to the tasks that will receive traffic
 
 Realm version 22 exercised a rich public record contract but still reached
