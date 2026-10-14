@@ -1164,9 +1164,11 @@ def test_operator_directives_applied(trial: TrialContext) -> CheckResult:
         raise SubmissionFailure(f"no verified warm standby before the operator checks: {standby} runs {len(warm)} "
                                 f"tasks of {standby_version}, verified {record['verified']}")
 
-    # 1. The operator points live_color at the warm standby: the next run
-    # switches listeners onto exactly those tasks; nothing starts or stops.
+    # 1. The operator points live_color at the warm standby, then the worker
+    # is replaced.  The next run can learn the requested listener swap only
+    # from the durable record, not a local release-state cache.
     generation = _operator_edit(trial, live_color=standby)
+    _fresh_worker(trial)
     problems, _ = _directive_run(trial, "deploy-operator-swap", None, generation,
                                  {live_version, standby_version}, {standby: warm, live: live_tasks})
     routing = trial.routing()
@@ -1209,7 +1211,7 @@ def test_operator_directives_applied(trial: TrialContext) -> CheckResult:
         raise SubmissionFailure("; ".join(problems))
     return CheckResult(
         "lifecycle.operator_directives_applied", Outcome.PASS,
-        f"operator edits were carried out from the record: production moved onto the warm {standby} tasks with "
+        f"a fresh worker carried the operator record edit out: production moved onto the warm {standby} tasks with "
         f"nothing started, the {live} standby was retired and brought back with {live_version}, every run "
         "unchanged with the operator's generation kept",
     )

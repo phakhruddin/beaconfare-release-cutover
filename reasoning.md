@@ -135,6 +135,22 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.15.0: operator directives survive a worker handoff
+
+The record is publicly the source of truth both after a worker handoff and
+after an operator edit, but the executable scenarios had exercised those
+rules independently. A controller could pass by applying an operator edit
+only while its preceding local cache remained available. Version 24 composes
+the two normal operating conditions: the operator changes `live_color`, the
+worker is replaced with only Terraform state, and the replacement must make
+the record-selected listener swap without replacing either warm task set.
+
+This is deterministic and implementation-neutral. It uses the same documented
+fresh-copy procedure, the same valid operator edit, and the existing
+zero-downtime task-identity checks. It rejects only a controller that lets
+stale local state override durable operator intent; a controller that reads
+and validates the published record has a direct, ordinary solution path.
+
 ### v0.14.0: proof recovery survives an interrupted recovery worker
 
 Version 23 made a first fresh worker reconstruct missing warm-task proof, but
@@ -423,7 +439,7 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.operator_directives_applied` | 9 | The operator points `live_color` at the warm standby; a no-release run must switch listeners onto exactly those tasks (nothing started or stopped, single changeover, zero failures). The operator then sets the new standby's count to 0 (it must go idle, manifest standby `null`) and back to `api_desired_count` with a verified release (it must run warm behind preview). Live tasks never change; every run records `unchanged`, keeps the operator's generation and leaves an accurate record. |
+| `lifecycle.operator_directives_applied` | 9 | The operator points `live_color` at the warm standby, then the submission directory is replaced retaining only `infra/terraform.tfstate`; a no-release run must read the record and switch listeners onto exactly those tasks (nothing started or stopped, single changeover, zero failures). The operator then sets the new standby's count to 0 (it must go idle, manifest standby `null`) and back to `api_desired_count` with a verified release (it must run warm behind preview). Live tasks never change; every run records `unchanged`, keeps the operator's generation and leaves an accurate record. |
 | `lifecycle.unverified_standby_proven` | 8 | The operator places the defective release in the standby; a no-release run stages it behind preview without adding it to `verified`. Requesting it must take the candidate path: self-test, rejection, standby to 0, generation +1, production never answered by it. The operator then revokes the good standby release from `verified` and places it in the standby; requesting it must be proven and promoted (outcome `promoted`, not `rolled_back`), with `verified` restored and the old live tasks kept warm. |
 | `lifecycle.current_task_proof_reconciled` | 13 | The verifier restarts a proven warm standby out of band while keeping its release and desired count. A no-release run must keep live traffic and tasks intact, retain global history but clear the stale standby proof. Requesting that same release must self-test every already-running replacement task through preview, switch once with outcome `promoted` (not `rolled_back`), and record an exact proof that independently sampled task identities match. |
 | `lifecycle.undeployable_record_refused` | 7 | Four undeployable records (live color idle, a count of `api_desired_count`+1, live release missing from `verified`, an unknown release on a running color while a valid release is requested) are each refused with `65` within 30 s, changing no record, lock, file, manifest, listener, count, task definition or task. With the record restored, the next run changes nothing and keeps the generation. |

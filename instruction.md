@@ -189,8 +189,10 @@ through `deploy.sh`, after the last release.
     disturbing a color that already runs its recorded release.
 12. An operator may edit the release record between runs (switch the live
     color, change a color's release or count, revoke releases from
-    `verified`). The next run carries the edit out from the record without a
-    failed request and without touching colors that already match. Only a
+    `verified`). The worker that made the preceding run may be gone before
+    the next run, so the next worker carries the edit out from the record—not
+    from any local cache—without a failed request and without touching colors
+    that already match. Only a
     release in `verified` with current-task proof that matches the warm tasks
     is rolled back to; any other standby release must pass its self-test
     first. If a warm standby was restarted outside the controller, a

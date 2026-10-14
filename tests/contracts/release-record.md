@@ -76,8 +76,10 @@ Other attributes are allowed and ignored.
    holds the lock) an operator may change the record directly: point
    `live_color` at the other color, change a color's release or count, or
    remove releases from `verified` so they must be proven again. An
-   operator who edits the record raises `generation` by one. The next run
-   treats the edited record as the recorded state and carries it out like
+   operator who edits the record raises `generation` by one. The worker from
+   the preceding run may be replaced before that next run, retaining only
+   Terraform state as rule 3 describes. The next run treats the edited record
+   as the recorded state and carries it out like
    any drift (*The recorded state is the truth* in `release-process.md`):
    listeners switch to the recorded colors without a failed production
    request, a color whose recorded release or count differs from what it

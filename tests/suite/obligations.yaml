@@ -337,9 +337,9 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair and rule 5 of release-record.md (operators may edit the record)",
-      "when": "an operator points live_color at the warm standby, then sets the new standby's count to 0, then restores it with a verified release at api_desired_count, with a no-release run after each edit under continuous traffic",
+      "when": "an operator points live_color at the warm standby, the submission worker is replaced retaining only infra/terraform.tfstate, then no-release runs carry out that edit and later set the new standby's count to 0 and restore it with a verified release at api_desired_count under continuous traffic",
       "then": [
-        "after the swap production forwards to exactly the standby tasks and preview to the former live tasks, with no task started or stopped and a single changeover",
+        "after the fresh-worker swap production forwards to exactly the record-selected standby tasks and preview to the former live tasks, with no task started or stopped and a single changeover",
         "after the retirement the standby runs no tasks, the manifest standby version is null and the live tasks are untouched",
         "after the restoration the standby runs the operator's release at api_desired_count behind preview and the live tasks are untouched",
         "every run records unchanged, keeps the operator's generation, leaves an accurate record and releases its lock",
