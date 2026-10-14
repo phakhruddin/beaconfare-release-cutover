@@ -262,6 +262,12 @@ now publishes those exact transients and the reference retries them with the
 same bounded policy; resource, plan and application errors remain
 non-retryable.
 
+The retry attempt itself is capped at 360 seconds. Only a replacement attempt
+after a provider-startup failure is capped—the first apply retains its normal
+time to create the platform. This prevents a silent second provider process
+from consuming the deployment's whole 720-second public budget while leaving
+enough time for a clear, actionable failure.
+
 The reference also folds a known-new candidate into its first convergence
 instead of first applying the unchanged record and then applying the same
 candidate state again. It does not skip convergence, readiness, self-test or

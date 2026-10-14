@@ -270,10 +270,23 @@ tf() {
   local attempt rc
   for attempt in 1 2 3; do
     set +e
-    terraform -chdir="$INFRA_DIR" "$@" 2>&1 | tee "$WORK/tf.out" >&2
+    # The first apply can legitimately create the whole platform. A retry is
+    # different: it follows a provider start-up failure before Terraform
+    # planned or wrote anything, so cap that replacement process and leave
+    # time for deploy.sh to report a real failure instead of outliving its
+    # documented 720-second budget with no output.
+    if [ "$attempt" -eq 1 ]; then
+      terraform -chdir="$INFRA_DIR" "$@" 2>&1 | tee "$WORK/tf.out" >&2
+    else
+      timeout 360 terraform -chdir="$INFRA_DIR" "$@" 2>&1 | tee "$WORK/tf.out" >&2
+    fi
     rc=${PIPESTATUS[0]}
     set -e
     [ "$rc" = 0 ] && return 0
+    if [ "$rc" = 124 ]; then
+      log "terraform $1: retry attempt exceeded 360 seconds after provider start-up failure"
+      return "$rc"
+    fi
     retryable_provider_startup_failure || return "$rc"
     [ "$attempt" -lt 3 ] || break
     log "terraform $1: provider start-up was cancelled (attempt $attempt); retrying"
