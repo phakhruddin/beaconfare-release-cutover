@@ -850,8 +850,15 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         problems.append(f"a run that changed nothing moved the record generation to {record.get('generation')}, "
                         f"expected {generation}")
 
-    # 4. The warm standby is still a rollback target, found from the record.
-    report, failure = release_under_traffic(trial, standby_version, "deploy-record-rollback")
+    # 4. Interrupt/restart the recovery worker itself.  The second worker has
+    # neither the original cache nor the first recovery worker's cache, so a
+    # rollback can be authorized only by the proof worker A persisted in the
+    # cloud record.  This is deliberately distinct from merely checking the
+    # record while worker A's local files remain available.
+    _fresh_worker(trial)
+
+    # 5. The warm standby is still a rollback target, found from the record.
+    report, failure = release_under_traffic(trial, standby_version, "deploy-record-restarted-worker-rollback")
     if failure:
         raise failure
     problems += traffic_problems(report, {live_version, standby_version})
@@ -874,7 +881,7 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         "lifecycle.state_recovered_from_record", Outcome.PASS,
         f"the release record tracked the preceding recovery promotion (generation "
         f"{promotion.get('generation_before')}->{generation}); on a fresh worker a no-release run changed nothing "
-        f"and the warm standby {standby_version} was rolled back to (generation {generation + 1})",
+        f"and a second fresh worker rolled back to warm standby {standby_version} (generation {generation + 1})",
     )
 
 

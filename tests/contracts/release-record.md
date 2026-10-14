@@ -59,9 +59,13 @@ Other attributes are allowed and ignored.
    reconstruct their current-task proof; that observation does not start,
    stop or route any task. If the intact warm standby's proof is absent or
    stale after this handoff, that no-release recovery run **must** perform
-   this independent proof before it records `unchanged`. The next request for
-   the proven warm release is a `rolled_back` listener swap reusing those
-   tasks; cache loss alone must not turn it into a candidate `promoted` run.
+   this independent proof before it records `unchanged` and persist the exact
+   proof in the record. A subsequent fresh worker, with that recovery worker's
+   local files gone too, must recover the proof from the record: its request
+   for the proven warm release is a `rolled_back` listener swap reusing those
+   tasks. Cache loss or worker restart alone must not turn it into a candidate
+   `promoted` run, and neither recovery run may change routing or task
+   identities.
 
 4. **A crash leaves the record behind.** A run that stops at a requested
    crash point (`crash-recovery.md`) does not change the attributes above.

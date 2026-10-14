@@ -135,6 +135,26 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.14.0: proof recovery survives an interrupted recovery worker
+
+Version 23 made a first fresh worker reconstruct missing warm-task proof, but
+the panel still consistently chose the candidate path at this boundary. The
+revised public contract makes the authority and sequence unambiguous: worker
+A, with only Terraform state, must read the durable record and independently
+prove the already-running preview tasks without changing serving state. It
+must persist that exact proof in the cloud record. Worker A is then discarded
+as well; worker B has only Terraform state and must classify the same warm
+release as a rollback, reusing its exact tasks in one listener change. This
+is a normal worker interruption/restart sequence, not a hidden fault: the
+fresh-worker contract explicitly permits replacement between any two runs.
+
+The executable obligation now performs both handoffs. It snapshots task and
+routing identity around worker A's no-release recovery, checks record proof
+and generation, then deletes worker A's generated files before asking worker
+B for the warm release. It therefore distinguishes durable record authority
+from any solution that carries proof only in a local cache, while retaining
+the same feasible safety rule for every implementation.
+
 ### v0.13.0: fresh workers recover task proof, not merely release names
 
 Version 23's panel runs all reached 92: after a fresh-worker handoff, each
@@ -391,7 +411,7 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 
 | Obligation | Pts | What it proves |
 |---|---:|---|
-| `lifecycle.state_recovered_from_record` | 8 | The record matches the live deployment (live color, per-color task counts, the release each non-idle color serves, the manifest's last request). The preceding defective-release recovery's known-good promotion moves `generation` by exactly one. The verifier then replaces the submission directory with a fresh copy of the handed-over submission, keeping only `infra/terraform.tfstate`: a no-release run must change no routing, start or stop no task, record `unchanged` and keep the generation; requesting the warm standby's release must roll back onto exactly its tasks and move the generation by one. No production request may fail. |
+| `lifecycle.state_recovered_from_record` | 8 | The record matches the live deployment (live color, per-color task counts, the release each non-idle color serves, the manifest's last request). The preceding defective-release recovery's known-good promotion moves `generation` by exactly one. Worker A is replaced with a fresh submission retaining only `infra/terraform.tfstate`: its no-release run must change no routing or task, independently prove the intact warm preview tasks, persist that exact proof, record `unchanged` and keep the generation. Worker A is then replaced too. Worker B, also retaining only Terraform state, requests the warm release and must roll back onto exactly those tasks, not promote a cache-loss candidate, moving the generation by one. No production request may fail. |
 
 ### Crash points and takeover recovery — 8
 
