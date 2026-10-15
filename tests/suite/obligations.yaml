@@ -371,9 +371,9 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair whose record contains current-task proof for both colors",
-      "when": "the verifier stops and restarts the warm standby at the same release and count outside deploy.sh, runs deploy with no release, then requests that standby release under continuous traffic",
+      "when": "the verifier stops and restarts the warm standby at the same release and count outside deploy.sh, replaces the submission worker retaining only infra/terraform.tfstate, runs deploy with no release, then requests that standby release under continuous traffic",
       "then": [
-        "the no-release reconciliation keeps production and its tasks intact, retains verified history, and clears rather than refreshes the standby proof",
+        "the fresh-worker no-release reconciliation keeps production and its tasks intact, retains verified history, and clears rather than refreshes the nonempty stale standby proof",
         "the release request is not an instant rollback: it self-tests every restarted warm task through preview, preserves those already-running tasks, switches once, and records promoted",
         "the resulting record contains the target release and exactly the distinct current X-BeaconFare-Task identities for its live color; independently sampled listener identities equal that evidence",
         "no production request fails and the generation advances exactly once for the promotion"

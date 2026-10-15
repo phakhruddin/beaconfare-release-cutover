@@ -176,9 +176,11 @@ through `deploy.sh`, after the last release.
     directory is replaced by a fresh copy (only Terraform state kept), the
     next runs continue from the record: nothing serving changes, no task
     starts or stops, and the warm standby can still be rolled back to. If its
-    exact current-task proof is missing or stale, the no-release recovery run
+    exact current-task proof is missing, the no-release recovery run
     independently self-tests the existing preview tasks and records that
-    proof. A later fresh worker must recover that proof from the record
+    proof. A nonempty proof whose identities no longer match shows an external
+    task restart, even on a fresh worker: it must be cleared, not rebuilt.
+    A later fresh worker must recover an intact proof from the record
     rather than from a local cache: its request for the same warm release
     must be `rolled_back`, not a cache-loss `promoted` candidate. Neither
     recovery run may change routing or start or stop a task.

@@ -135,6 +135,23 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.16.0: a fresh worker must not re-bless replaced warm tasks
+
+A missing proof after a worker handoff is recoverable: an intact preview
+standby can be independently sampled and recorded again. A nonempty proof
+with different task identities is a different state—it proves those warm
+tasks were externally replaced. Version 25 makes this safety distinction
+explicit and executable by restarting the warm standby, discarding the worker,
+then requiring the replacement worker to clear the stale proof. A later
+request must take candidate verification and report `promoted`, never use a
+fresh-worker shortcut to roll back onto unproven replacement tasks.
+
+This is a reproducible composition of the existing record and current-task
+proof contracts. It preserves the legitimate recovery path for absent proof,
+but prevents an implementation from treating every proof mismatch as cache
+loss. The verifier samples actual task identities and checks traffic, task
+reuse, record history, outcome, and fresh proof deterministically.
+
 ### v0.15.0: operator directives survive a worker handoff
 
 The record is publicly the source of truth both after a worker handoff and
@@ -441,7 +458,7 @@ runs at 94 and 84 and no false results. Two causes, both fixed in v0.7.0:
 |---|---:|---|
 | `lifecycle.operator_directives_applied` | 9 | The operator points `live_color` at the warm standby, then the submission directory is replaced retaining only `infra/terraform.tfstate`; a no-release run must read the record and switch listeners onto exactly those tasks (nothing started or stopped, single changeover, zero failures). The operator then sets the new standby's count to 0 (it must go idle, manifest standby `null`) and back to `api_desired_count` with a verified release (it must run warm behind preview). Live tasks never change; every run records `unchanged`, keeps the operator's generation and leaves an accurate record. |
 | `lifecycle.unverified_standby_proven` | 8 | The operator places the defective release in the standby; a no-release run stages it behind preview without adding it to `verified`. Requesting it must take the candidate path: self-test, rejection, standby to 0, generation +1, production never answered by it. The operator then revokes the good standby release from `verified` and places it in the standby; requesting it must be proven and promoted (outcome `promoted`, not `rolled_back`), with `verified` restored and the old live tasks kept warm. |
-| `lifecycle.current_task_proof_reconciled` | 13 | The verifier restarts a proven warm standby out of band while keeping its release and desired count. A no-release run must keep live traffic and tasks intact, retain global history but clear the stale standby proof. Requesting that same release must self-test every already-running replacement task through preview, switch once with outcome `promoted` (not `rolled_back`), and record an exact proof that independently sampled task identities match. |
+| `lifecycle.current_task_proof_reconciled` | 13 | The verifier restarts a proven warm standby out of band while keeping its release and desired count, then replaces the submission worker retaining only Terraform state. A no-release run must keep live traffic and tasks intact, retain global history but clear the nonempty stale standby proof. Requesting that same release must self-test every already-running replacement task through preview, switch once with outcome `promoted` (not `rolled_back`), and record an exact proof that independently sampled task identities match. |
 | `lifecycle.undeployable_record_refused` | 7 | Four undeployable records (live color idle, a count of `api_desired_count`+1, live release missing from `verified`, an unknown release on a running color while a valid release is requested) are each refused with `65` within 30 s, changing no record, lock, file, manifest, listener, count, task definition or task. With the record restored, the next run changes nothing and keeps the generation. |
 
 The controller takes one bounded, fresh-connection identity witness for the

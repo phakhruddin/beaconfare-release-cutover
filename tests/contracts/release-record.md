@@ -57,15 +57,18 @@ Other attributes are allowed and ignored.
    rolled back to, and the standalone plan still shows nothing to create or
    delete. It may self-test already-running warm tasks through preview to
    reconstruct their current-task proof; that observation does not start,
-   stop or route any task. If the intact warm standby's proof is absent or
-   stale after this handoff, that no-release recovery run **must** perform
+   stop or route any task. If the intact warm standby's proof is absent after
+   this handoff, that no-release recovery run **must** perform
    this independent proof before it records `unchanged` and persist the exact
    proof in the record. A subsequent fresh worker, with that recovery worker's
    local files gone too, must recover the proof from the record: its request
    for the proven warm release is a `rolled_back` listener swap reusing those
    tasks. Cache loss or worker restart alone must not turn it into a candidate
    `promoted` run, and neither recovery run may change routing or task
-   identities.
+   identities. A nonempty proof that fails the current-task comparison is
+   stale evidence of an external replacement, not a cache-loss case: even a
+   fresh worker must clear it and route a later request through candidate
+   verification.
 
 4. **A crash leaves the record behind.** A run that stops at a requested
    crash point (`crash-recovery.md`) does not change the attributes above.

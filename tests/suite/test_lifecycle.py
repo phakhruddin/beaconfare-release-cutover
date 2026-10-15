@@ -1367,6 +1367,11 @@ def test_current_task_proof_reconciled(trial: TrialContext) -> CheckResult:
     if restarted == old_warm:
         raise HarnessError("the endpoint reused every stopped task; could not create stale warm-task evidence")
 
+    # The original worker is gone too. A fresh worker must recognize that a
+    # nonempty durable proof with different identities means an external task
+    # replacement, not merely absent local cache.
+    _fresh_worker(trial)
+
     # A no-release reconciliation must preserve traffic and make the stale
     # proof empty.  It must not bless the replacement tasks just because their
     # release is in the global verified list.

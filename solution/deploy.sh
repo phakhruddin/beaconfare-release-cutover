@@ -216,6 +216,11 @@ set_proof() {  # set_proof <color> <release> <JSON array of task identities>
 clear_proof() {  # clear_proof <color>
   PROOFS=$(jq -c --arg c "$1" '.[$c] = {release: "", tasks: []}' <<<"$PROOFS")
 }
+proof_empty() {  # proof_empty <color>
+  # Empty proof is recoverable after a worker handoff. A nonempty proof that
+  # fails to match shows external task replacement and must stay ineligible.
+  jq -e --arg c "$1" '.[$c].release == "" and .[$c].tasks == []' <<<"$PROOFS" >/dev/null
+}
 
 if [ ! -s "$STATE_FILE" ]; then
   FIRST_DEPLOY=true
@@ -595,11 +600,10 @@ if ! proof_matches "$PROD_URL" "$LIVE_COLOR" "$LIVE_VERSION"; then
 fi
 if [ "$REQUESTED" = "$LIVE_VERSION" ] && [ "$STANDBY_COUNT" -gt 0 ]; then
   if ! proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
-    if "$FRESH_RECORD_WORKER"; then
-      # No local cache survived, but the cloud record says this is an intact
-      # warm standby. Prove these existing preview tasks independently rather
-      # than treating cache loss as a task restart. Ordinary reconciliation
-      # below still clears evidence after an operator restart.
+    if "$FRESH_RECORD_WORKER" && proof_empty "$STANDBY_COLOR"; then
+      # No local cache or durable proof survived, but the record says this is
+      # an intact warm standby. Prove it independently. A nonempty proof that
+      # fails to match is an external task replacement, handled by clearing it.
       log "fresh worker is rebuilding proof for warm $STANDBY_COLOR/$STANDBY_VERSION"
       if selftest "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
         set_proof "$STANDBY_COLOR" "$STANDBY_VERSION" "$SELFTEST_TASKS"
