@@ -135,6 +135,17 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.17.0: repair must survive worker loss
+
+The task already required repair after a managed listener and standby service
+are deleted, and separately allowed any run to start on a fresh worker. This
+version composes those public conditions: after the deletion, the controller
+loses every generated file except Terraform state. The replacement worker must
+read the release record, recreate only the missing standby path and manifest,
+and leave production on its existing live tasks. The executable check uses the
+same deterministic deletion and continuous-traffic evidence as the prior
+repair test; it adds no timing or model-specific condition.
+
 ### v0.16.0: a fresh worker must not re-bless replaced warm tasks
 
 A missing proof after a worker handoff is recoverable: an intact preview
@@ -474,7 +485,7 @@ reconciliation loops that consume the release budget.
 |---|---:|---|
 | `lifecycle.instant_rollback` | 4 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
 | `lifecycle.drift_restored` | 4 | With a warm pair, the verifier swaps the two listeners and scales the standby to 1 task outside `deploy.sh` (and first proves production now serves the standby release). A no-release deploy must put production and preview back on the **recorded** colors and the standby back to its recorded count, with zero failed requests and live tasks untouched. A controller that reads "which color is live" from the listeners adopts the drift. |
-| `lifecycle.repair_without_disruption` | 2 | Preview listener and standby service are deleted; a no-release deploy restores both, preview forwards to standby, no production request fails, no live task is replaced. |
+| `lifecycle.repair_without_disruption` | 2 | Preview listener and standby service are deleted; the worker is replaced retaining only Terraform state. A no-release deploy restores both from retained state and record, preview forwards to standby, no production request fails, no live task is replaced. |
 | `lifecycle.reapply_stable` | 1 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
 
 ### Blue/green topology — 5

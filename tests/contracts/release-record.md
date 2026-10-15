@@ -55,7 +55,10 @@ Other attributes are allowed and ignored.
    been lost: with no release requested it changes nothing that is serving
    and starts or stops no task, a warm standby stays warm and can still be
    rolled back to, and the standalone plan still shows nothing to create or
-   delete. It may self-test already-running warm tasks through preview to
+   delete. This remains true when a listener or standby service was deleted
+   before the handoff: the next worker restores the recorded deployment from
+   the record and retained Terraform state without disrupting the live color.
+   It may self-test already-running warm tasks through preview to
    reconstruct their current-task proof; that observation does not start,
    stop or route any task. If the intact warm standby's proof is absent after
    this handoff, that no-release recovery run **must** perform

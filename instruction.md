@@ -164,7 +164,8 @@ through `deploy.sh`, after the last release.
    no release requested puts them back to your recorded release state
    without failing a production request.
 7. Rerunning `deploy.sh` with no release requested after managed resources
-   were deleted restores them without disturbing production.
+   were deleted restores them without disturbing production, even when the
+   prior worker has been replaced and only Terraform state remains locally.
 8. While another holder's release lock lease is live, `deploy.sh` changes
    nothing and exits `75`; an expired lease is taken over, and every run
    releases its own lock when it ends.

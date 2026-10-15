@@ -1503,7 +1503,8 @@ def test_repair_without_disruption(trial: TrialContext) -> CheckResult:
     while time.monotonic() < deadline and cloud.service(trial.cluster, trial.service_arn(standby)) is not None:
         time.sleep(2)
 
-    report, failure = release_under_traffic(trial, None, "deploy-repair")
+    _fresh_worker(trial)
+    report, failure = release_under_traffic(trial, None, "deploy-repair-fresh-worker")
     if failure:
         raise failure
     problems = traffic_problems(report, {live_version})
@@ -1522,7 +1523,7 @@ def test_repair_without_disruption(trial: TrialContext) -> CheckResult:
         raise SubmissionFailure("; ".join(problems))
     return CheckResult(
         "lifecycle.repair_without_disruption", Outcome.PASS,
-        f"the preview listener and the {standby} service were restored without a failed production request",
+        f"a fresh worker restored the preview listener and {standby} service without a failed production request",
         details={"requests": report.total},
     )
 

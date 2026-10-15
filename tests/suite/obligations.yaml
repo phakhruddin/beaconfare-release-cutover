@@ -234,7 +234,7 @@
       "fidelity": "real",
       "implementation": "executable",
       "given": "a warm blue/green pair whose listeners were swapped and whose standby was scaled down outside deploy.sh",
-      "when": "deploy runs with no release requested under continuous traffic",
+      "when": "the submission worker is replaced retaining only infra/terraform.tfstate, then deploy runs with no release requested under continuous traffic",
       "then": [
         "no production request fails",
         "production and preview forward to the recorded live and standby colors again",
@@ -405,7 +405,7 @@
       "when": "deploy runs with no release requested under continuous traffic",
       "then": [
         "no production request fails and no live task is replaced",
-        "the preview listener and the standby service exist again and preview forwards to the standby color",
+        "the fresh worker restores the preview listener and standby service from retained state and record, and preview forwards to the standby color",
         "the manifest records an unchanged release"
       ],
       "deadline_seconds": 900
