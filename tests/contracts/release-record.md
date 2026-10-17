@@ -16,6 +16,8 @@ item:
 |---|---|---|
 | `lock_id` | `S` | Always `release-record`. |
 | `generation` | `N` | Version of the recorded state, see below. |
+| `state_digest` | `S` | Lowercase SHA-256 of the record's canonical deployable state, defined under *State lineage*. |
+| `previous_state_digest` | `S` | The `state_digest` observed before the most recent generation change, or 64 zeroes for generation 1. |
 | `live_color` | `S` | `blue` or `green`: the color production forwards to. |
 | `blue_release`, `green_release` | `S` | The release each color is assigned. For a color whose count is `0` the value is yours to choose and is not checked. |
 | `blue_count`, `green_count` | `N` | The task count each color should run. |
@@ -46,6 +48,26 @@ Other attributes are allowed and ignored.
    the run started records the previous generation **plus exactly one**,
    however many times it writes the record along the way. A run that ends
    with the same five values keeps the generation unchanged.
+
+   **State lineage.** The record makes each generation change independently
+   auditable. Canonical state is the compact UTF-8 JSON object below with keys
+   sorted lexically, no whitespace, JSON string escaping, and integer numbers:
+
+   ```json
+   {"blue_count":2,"blue_release":"3.4.0","generation":7,"green_count":2,"green_release":"3.6.0","live_color":"green"}
+   ```
+
+   The values come from the record's `generation`, `live_color`, both release
+   attributes and both count attributes. `state_digest` is the lowercase
+   hexadecimal SHA-256 of those exact bytes. On generation 1,
+   `previous_state_digest` is 64 zeroes. Whenever generation advances,
+   `previous_state_digest` becomes the exact `state_digest` read at the start
+   of the run and `state_digest` is recomputed for the new state. A run whose
+   generation stays unchanged preserves both digest attributes exactly.
+   This applies equally to operators: an operator edit raises generation,
+   copies the old digest to `previous_state_digest`, and recomputes
+   `state_digest`. The controller may implement the update however it chooses;
+   only the live record and observable rollout behavior are required.
 3. **The record is the source of truth.** Between any two runs, the
    submission directory may be replaced by a fresh copy of the submission
    as you handed it over, keeping only `infra/terraform.tfstate`. Every
@@ -83,7 +105,8 @@ Other attributes are allowed and ignored.
    holds the lock) an operator may change the record directly: point
    `live_color` at the other color, change a color's release or count, or
    remove releases from `verified` so they must be proven again. An
-   operator who edits the record raises `generation` by one. The worker from
+   operator who edits the record raises `generation` by one and advances the
+   state lineage exactly as rule 2 defines. The worker from
    the preceding run may be replaced before that next run, retaining only
    Terraform state as rule 3 describes. The next run treats the edited record
    as the recorded state and carries it out like
@@ -129,6 +152,8 @@ holds:
 
 - `live_color` is not `blue` or `green`;
 - `generation` is not a whole number of at least `1`;
+- `state_digest` is not the lowercase SHA-256 recomputed from canonical state,
+  or `previous_state_digest` is not 64 lowercase hexadecimal characters;
 - `verified` is missing, empty, or not a list of strings;
 - a count is anything other than `0` or `api_desired_count`;
 - the live color's count is `0`;

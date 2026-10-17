@@ -133,7 +133,30 @@ is discarded on the first verifier run.
 
 ## Score
 
-Twenty obligations, 100 points. Only 100 passes.
+Twenty-one obligations, 100 points. Only 100 passes.
+
+### v0.20.0: independently recomputable release-state lineage
+
+The v0.19.0 Realm panel was terminal but did not meet its acceptance
+distribution: multiple non-Astra runs reached 100, while other runs ended at
+92 or were unscored. The aggregate evidence does not justify a model-specific
+test or a reclassification of the unscored runs, so this revision strengthens
+one public rollout invariant instead.
+
+Every cloud release record now contains `state_digest`, the lowercase SHA-256
+of a precisely specified canonical JSON projection of generation, live color,
+both assigned releases and both counts, plus `previous_state_digest`. The
+first record links to 64 zeroes; each generation change links to the exact
+digest read at run start; an unchanged run preserves both values. Operators
+advance the same public lineage when editing the record. A new eight-point
+lifecycle obligation gives a fresh worker an otherwise deployable record with
+a torn generation/digest pair and requires side-effect-free exit 65, restores
+the exact record, performs a proven warm rollback under traffic, independently
+recomputes the resulting digest and predecessor, then proves a no-change run
+does not manufacture another transition. The points are rebalanced from
+overlapping operator/proof checks; the total remains 100. This tests observable
+live behavior and canonical record data, not shell structure, Terraform names,
+or any model family.
 
 ### v0.19.0: bounded continuous-traffic evidence
 

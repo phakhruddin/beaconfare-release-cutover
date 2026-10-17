@@ -7,6 +7,7 @@ and destroying. Every check reads routing, tasks and responses live.
 """
 from __future__ import annotations
 
+import json
 import time
 
 from .test_live import live_color, other, sample
@@ -652,6 +653,27 @@ def _record(trial: TrialContext) -> dict | None:
 
 
 PROOF_FIELDS = ("blue_proof_release", "blue_proof_tasks", "green_proof_release", "green_proof_tasks")
+STATE_FIELDS = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count")
+
+
+def _state_digest(record: dict) -> str:
+    """Canonical digest defined by release-record.md."""
+    payload = {key: record[key] for key in STATE_FIELDS}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _raw_state_digest(item: dict) -> str:
+    """Recompute the public state digest from a DynamoDB-JSON record."""
+    decoded = {
+        "generation": int(item["generation"]["N"]),
+        "live_color": item["live_color"]["S"],
+        "blue_release": item["blue_release"]["S"],
+        "green_release": item["green_release"]["S"],
+        "blue_count": int(item["blue_count"]["N"]),
+        "green_count": int(item["green_count"]["N"]),
+    }
+    return _state_digest(decoded)
 
 
 def _proof(record: dict, color: str) -> tuple[object, object]:
@@ -712,13 +734,22 @@ def _record_problems(trial: TrialContext, label: str) -> tuple[dict, list[str]]:
     if record is None:
         return {}, [f"{label}: there is no release record item (lock_id release-record)"]
     problems = []
-    required = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
+    required = (*STATE_FIELDS, "state_digest", "previous_state_digest",
                 "last_request_version", "last_request_outcome", "verified", *PROOF_FIELDS)
     missing = [key for key in required if key not in record]
     if missing:
         return record, [f"{label}: the release record lacks {missing}"]
     if not isinstance(record["generation"], int) or record["generation"] < 1:
         problems.append(f"{label}: record generation is {record['generation']!r}")
+    else:
+        expected = _state_digest(record)
+        if record.get("state_digest") != expected:
+            problems.append(f"{label}: record state_digest {record.get('state_digest')!r} does not equal "
+                            f"the canonical state digest {expected}")
+    previous = record.get("previous_state_digest")
+    if not isinstance(previous, str) or len(previous) != 64 \
+       or any(char not in "0123456789abcdef" for char in previous):
+        problems.append(f"{label}: previous_state_digest is not a lowercase SHA-256 digest: {previous!r}")
     if not isinstance(record["verified"], list) or not record["verified"]:
         problems.append(f"{label}: record verified is {record['verified']!r}, expected a non-empty list of releases")
     elif record.get(f"{record['live_color']}_release") not in record["verified"]:
@@ -908,7 +939,8 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
     )
 
 
-RECORD_FIELDS = ("generation", "live_color", "blue_release", "green_release", "blue_count", "green_count",
+RECORD_FIELDS = ("generation", "state_digest", "previous_state_digest", "live_color",
+                 "blue_release", "green_release", "blue_count", "green_count",
                  "last_request_version", "last_request_outcome", "verified", *PROOF_FIELDS)
 CRASH_STATUSES = {137, -9}  # exit 137, or killed by SIGKILL
 
@@ -1134,9 +1166,14 @@ def _operator_edit(trial: TrialContext, **changes) -> int:
         generation = int(item["generation"]["N"]) + 1
     except (KeyError, ValueError) as exc:
         raise SubmissionFailure(f"the release record has no usable generation: {item.get('generation')}") from exc
+    prior_digest = item.get("state_digest", {}).get("S")
+    if not isinstance(prior_digest, str):
+        raise SubmissionFailure("the release record has no state_digest for the operator lineage")
     for key, value in changes.items():
         item[key] = _encode(value)
     item["generation"] = {"N": str(generation)}
+    item["previous_state_digest"] = {"S": prior_digest}
+    item["state_digest"] = {"S": _raw_state_digest(item)}
     trial.cloud.ddb.put_item(TableName=trial.config.lock_table, Item=item)
     return generation
 
@@ -1480,9 +1517,12 @@ def test_undeployable_record_refused(trial: TrialContext) -> CheckResult:
     try:
         for label, release, changes in variants:
             item = dict(original)
+            prior_digest = original["state_digest"]["S"]
             for key, value in changes.items():
                 item[key] = _encode(value)
             item["generation"] = {"N": str(generation + 1)}
+            item["previous_state_digest"] = {"S": prior_digest}
+            item["state_digest"] = {"S": _raw_state_digest(item)}
             cloud.ddb.put_item(TableName=cfg.lock_table, Item=item)
             problems += _refused(trial, label, release, 65, live, live_tasks)
             if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != standby_tasks:
@@ -1503,6 +1543,95 @@ def test_undeployable_record_refused(trial: TrialContext) -> CheckResult:
         "lifecycle.undeployable_record_refused", Outcome.PASS,
         f"four undeployable records were each refused with 65 within {REFUSAL_SECONDS}s with nothing changed; "
         "with the record fixed the next run changed nothing and kept the generation",
+    )
+
+
+@obligation("lifecycle.record_lineage_enforced")
+def test_record_lineage_enforced(trial: TrialContext) -> CheckResult:
+    """State digests refuse torn directives and link a rollback exactly once."""
+    cfg, cloud = trial.config, trial.cloud
+    record, problems = _record_problems(trial, "before lineage check")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    live = live_color(trial)
+    standby = other(live)
+    live_version = record[f"{live}_release"]
+    standby_version = record[f"{standby}_release"]
+    live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(live))
+    warm_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(standby))
+    proof_release, _ = _proof(record, standby)
+    proof_problems = _current_proof_problems(trial, record, standby, "lineage precondition")
+    if len(warm_tasks) != cfg.desired or proof_release != standby_version or proof_problems:
+        raise SubmissionFailure("the lineage check requires a current proven warm standby: "
+                                + "; ".join(proof_problems))
+
+    original = _raw_record(trial)
+    original_digest = record["state_digest"]
+    original_previous = record["previous_state_digest"]
+    generation = record["generation"]
+
+    # Simulate a torn/out-of-band directive: its core values are otherwise
+    # deployable, but generation was changed without recomputing the public
+    # digest. A fresh worker must refuse before repairing files or cloud state.
+    _fresh_worker(trial)
+    torn = dict(original)
+    torn["generation"] = {"N": str(generation + 1)}
+    cloud.ddb.put_item(TableName=cfg.lock_table, Item=torn)
+    try:
+        problems = _refused(trial, "deploy-record-torn-lineage", None, 65, live, live_tasks)
+        if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != warm_tasks:
+            problems.append("torn-lineage refusal started, stopped or replaced standby tasks")
+    finally:
+        cloud.ddb.put_item(TableName=cfg.lock_table, Item=original)
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    # A real rollback must reuse the proven warm tasks and commit one linked
+    # state transition: current digest recomputes, previous digest is exactly
+    # the state we observed before the listener swap.
+    report, failure = release_under_traffic(trial, standby_version, "deploy-lineage-rollback")
+    if failure:
+        raise failure
+    problems = traffic_problems(report, {live_version, standby_version})
+    if not single_changeover(report, live_version, standby_version):
+        problems.append("lineage rollback switched back after serving the target release")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(standby)) != warm_tasks:
+        problems.append("lineage rollback did not reuse exactly the proven warm tasks")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(live)) != live_tasks:
+        problems.append("lineage rollback replaced the former live tasks")
+    after, found = _record_problems(trial, "after lineage rollback")
+    problems += found
+    if after.get("generation") != generation + 1:
+        problems.append(f"lineage rollback generation is {after.get('generation')}, expected {generation + 1}")
+    if after.get("previous_state_digest") != original_digest:
+        problems.append(f"lineage rollback previous digest is {after.get('previous_state_digest')}, "
+                        f"expected {original_digest}")
+    if trial.manifest["release"]["last_request"] != {"version": standby_version, "outcome": "rolled_back"}:
+        problems.append(f"lineage rollback recorded {trial.manifest['release']['last_request']}")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    # An acting run that changes no deployable state must preserve the whole
+    # lineage tuple, not manufacture another transition.
+    linked = (after["generation"], after["state_digest"], after["previous_state_digest"])
+    report, failure = release_under_traffic(trial, None, "deploy-lineage-unchanged")
+    if failure:
+        raise failure
+    problems = traffic_problems(report, {standby_version})
+    unchanged, found = _record_problems(trial, "after unchanged lineage run")
+    problems += found
+    if (unchanged.get("generation"), unchanged.get("state_digest"),
+            unchanged.get("previous_state_digest")) != linked:
+        problems.append("unchanged run rewrote the generation or digest lineage")
+    if original_previous == original_digest:
+        problems.append("precondition did not contain a distinct predecessor digest")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.record_lineage_enforced", Outcome.PASS,
+        "a torn state digest was refused with 65; warm rollback reused the proven tasks and linked exactly one "
+        "canonical state transition; the following unchanged run preserved that lineage",
+        details={"requests": report.total, "generation": linked[0]},
     )
 
 

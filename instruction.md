@@ -39,8 +39,9 @@ The contracts are under `/workspace/contracts/`:
 - `release-record.md` defines the release record: the release state kept in
   the cloud, which every acting run writes and from which a run on a fresh
   worker must be able to continue. It also defines durable current-task
-  proof: a rollback target must be proven on the exact warm tasks that would
-  receive production traffic.
+  proof and canonical state lineage: a rollback target must be proven on the
+  exact warm tasks that would receive production traffic, and each generation
+  change must link to the preceding state digest.
 - `crash-recovery.md` defines two named crash points that `deploy.sh` must
   honour when `BEACONFARE_FAULT_POINT` asks for one, what a crashed run
   leaves behind (exit `137`, its lock still held, the record untouched) and
@@ -204,9 +205,13 @@ through `deploy.sh`, after the last release.
     no-release reconciliation clears its stale proof rather than blessing it,
     and a request must re-prove those existing tasks through preview before
     promotion. A record that is not a deployable state is refused with `65`.
-13. A standalone `terraform plan -refresh=false` against `infra/` shows
+13. Every release record carries the canonical `state_digest` and
+    `previous_state_digest` defined in `release-record.md`. A mismatched digest
+    is an undeployable record refused with `65`; a rollback advances and links
+    the lineage exactly once, while an unchanged run preserves it.
+14. A standalone `terraform plan -refresh=false` against `infra/` shows
    nothing to create or delete.
-14. `destroy.sh` removes everything this deployment owns and nothing else.
+15. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring
 
@@ -216,9 +221,9 @@ The score is weighted by category. A run passes only at 100.
 |---|---:|
 | Verified promotion and defective-release rejection | 12 |
 | Exclusive release lock and side-effect-free refusals | 11 |
-| Durable release record and independent recovery | 8 |
+| Durable release record, independent recovery and state lineage | 16 |
 | Crash points and takeover recovery | 8 |
-| Operator-controlled state and current-task rollback proof | 37 |
+| Operator-controlled state and current-task rollback proof | 29 |
 | Instant rollback, drift and repair, stable state | 11 |
 | Blue/green topology | 5 |
 | Product traffic | 1 |

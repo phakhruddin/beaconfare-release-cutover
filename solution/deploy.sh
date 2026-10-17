@@ -132,7 +132,25 @@ if "$LOCK_HELD" && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
              --consistent-read --output json 2>/dev/null | jq -c '.Item // empty' || true)
 fi
 
+record_digest() {  # stdin: a record item in DynamoDB JSON
+  jq -cjS '{
+    generation: (.generation.N | tonumber), live_color: .live_color.S,
+    blue_release: .blue_release.S, green_release: .green_release.S,
+    blue_count: (.blue_count.N | tonumber), green_count: (.green_count.N | tonumber)
+  }' | sha256sum | awk '{print $1}'
+}
+
+state_digest() {  # state_digest <generation>; reads the local release-state cache
+  jq -cjS --argjson generation "$1" '{
+    generation: $generation, live_color,
+    blue_release: .color_release.blue, green_release: .color_release.green,
+    blue_count: .color_count.blue, green_count: .color_count.green
+  }' "$STATE_FILE" | sha256sum | awk '{print $1}'
+}
+
 record_valid() {  # stdin: the record item in DynamoDB JSON
+  local item expected actual previous
+  item=$(cat)
   jq -e --argjson n "$DESIRED" --argjson rel "$RELEASES_JSON" '
     def num: if type == "object" and has("N") then (.N | tonumber? // null) else null end;
     def str: if type == "object" and has("S") and (.S | type) == "string" then .S else null end;
@@ -148,7 +166,11 @@ record_valid() {  # stdin: the record item in DynamoDB JSON
             | ($k == 0 or $k == $n) and ($k == 0 or ($r != null and any($rel[]; . == $r))))
       and (($rec[$live + "_count"] | num) == $n)
       and (($rec[$live + "_release"] | str) as $lr | any($ver[]; . == $lr))
-  ' >/dev/null 2>&1
+  ' <<<"$item" >/dev/null 2>&1 || return 1
+  expected=$(jq -r '.state_digest.S // empty' <<<"$item")
+  previous=$(jq -r '.previous_state_digest.S // empty' <<<"$item")
+  actual=$(record_digest <<<"$item") || return 1
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$previous" =~ ^[0-9a-f]{64}$ && "$expected" = "$actual" ]]
 }
 
 if [ -n "$RECORD" ] && ! record_valid <<<"$RECORD"; then
@@ -174,6 +196,8 @@ fi
 # truth; the local file is only a cache that may be missing or stale (the
 # verifier can hand us a fresh copy with only Terraform state kept).
 PREV_GEN=0
+PREV_STATE_DIGEST=""
+PREVIOUS_STATE_DIGEST=""
 VERIFIED=$(jq -cn --arg r "$INITIAL" '[$r]')
 # Keep this before restoring the record cache. A missing local cache plus a
 # valid record/state pair is the fresh-worker handoff, not ordinary drift.
@@ -199,6 +223,8 @@ if [ -n "$RECORD" ] && [ -s "${INFRA_DIR}/terraform.tfstate" ]; then
        color_count: {blue: (.blue_count.N | tonumber), green: (.green_count.N | tonumber)}}' \
     <<<"$RECORD" > "$STATE_FILE"
   PREV_GEN=$(jq -r '.generation.N' <<<"$RECORD")
+  PREV_STATE_DIGEST=$(jq -r '.state_digest.S' <<<"$RECORD")
+  PREVIOUS_STATE_DIGEST=$(jq -r '.previous_state_digest.S' <<<"$RECORD")
   VERIFIED=$(jq -c '[.verified.L[].S] | unique' <<<"$RECORD")
   PROOFS=$(jq -c '
       def proof($c): {
@@ -714,15 +740,20 @@ fi
 # by exactly one when the recorded state changed during this run.
 if [ "$PREV_GEN" = "0" ]; then
   GENERATION=1
+  PREVIOUS_STATE_DIGEST=$(printf '0%.0s' {1..64})
 elif [ "$(jq -cS . "$STATE_FILE")" != "$START_STATE" ]; then
   GENERATION=$(( PREV_GEN + 1 ))
+  PREVIOUS_STATE_DIGEST=$PREV_STATE_DIGEST
 else
   GENERATION=$PREV_GEN
 fi
+STATE_DIGEST=$(state_digest "$GENERATION")
 "$LOCK_HELD" || die "the release lock is not held; refusing to write the release record"
 "${AWSCLI[@]}" dynamodb put-item --table-name "$LOCK_TABLE" --item "$(jq -c \
-    --argjson g "$GENERATION" --arg v "$REQUESTED" --arg o "$OUTCOME" --argjson ver "$VERIFIED" --argjson proofs "$PROOFS" '{
+    --argjson g "$GENERATION" --arg digest "$STATE_DIGEST" --arg previous "$PREVIOUS_STATE_DIGEST" \
+    --arg v "$REQUESTED" --arg o "$OUTCOME" --argjson ver "$VERIFIED" --argjson proofs "$PROOFS" '{
       lock_id: {S: "release-record"}, generation: {N: ($g | tostring)},
+      state_digest: {S: $digest}, previous_state_digest: {S: $previous},
       live_color: {S: .live_color},
       blue_release: {S: .color_release.blue}, green_release: {S: .color_release.green},
       blue_count: {N: (.color_count.blue | tostring)}, green_count: {N: (.color_count.green | tostring)},

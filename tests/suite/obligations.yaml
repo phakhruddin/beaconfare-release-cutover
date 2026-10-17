@@ -24,10 +24,11 @@
     },
     {
       "id": "release_record",
-      "label": "Durable release record and independent recovery",
-      "weight": 8,
+      "label": "Durable release record, independent recovery and state lineage",
+      "weight": 16,
       "obligations": [
-        "lifecycle.state_recovered_from_record"
+        "lifecycle.state_recovered_from_record",
+        "lifecycle.record_lineage_enforced"
       ]
     },
     {
@@ -41,7 +42,7 @@
     {
       "id": "operator_record",
       "label": "Operator-controlled state and current-task rollback proof",
-      "weight": 37,
+      "weight": 29,
       "obligations": [
         "lifecycle.operator_directives_applied",
         "lifecycle.unverified_standby_proven",
@@ -333,7 +334,7 @@
     {
       "id": "lifecycle.operator_directives_applied",
       "plane": "lifecycle",
-      "weight": 9,
+      "weight": 7,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair and rule 5 of release-record.md (operators may edit the record)",
@@ -367,7 +368,7 @@
     {
       "id": "lifecycle.current_task_proof_reconciled",
       "plane": "lifecycle",
-      "weight": 13,
+      "weight": 9,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair whose record contains current-task proof for both colors",
@@ -383,7 +384,7 @@
     {
       "id": "lifecycle.undeployable_record_refused",
       "plane": "lifecycle",
-      "weight": 7,
+      "weight": 5,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the Validity rules in release-record.md and the refusal rules in release-process.md",
@@ -392,6 +393,22 @@
         "each run exits 65 within 30 seconds",
         "no refused run changes the record, the lock table, a submission file, the manifest, a listener, a desired count, a task definition or any task, and no production request fails",
         "with the record fixed, the next run records unchanged, keeps the generation and starts or stops no task"
+      ],
+      "deadline_seconds": 1500
+    },
+    {
+      "id": "lifecycle.record_lineage_enforced",
+      "plane": "lifecycle",
+      "weight": 8,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the canonical state-digest lineage in release-record.md and a proven warm standby",
+      "when": "a fresh worker receives an otherwise deployable record whose generation was changed without recomputing state_digest, then the exact record is restored and the warm standby is requested under continuous traffic, followed by a no-release run",
+      "then": [
+        "the mismatched digest is refused with 65 within 30 seconds and changes no file, record, lock, route, service or task",
+        "the rollback reuses exactly the proven warm tasks, fails no production request, advances generation once and records rolled_back",
+        "the rollback state_digest independently recomputes from the six canonical state fields and previous_state_digest equals the exact digest observed before rollback",
+        "the following unchanged run preserves generation, state_digest and previous_state_digest"
       ],
       "deadline_seconds": 1500
     },

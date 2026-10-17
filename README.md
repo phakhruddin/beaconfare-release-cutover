@@ -80,6 +80,11 @@ Traps that carry the difficulty:
     already-running tasks through preview before it may promote. Desired
     count, target health and global verification history cannot authorize
     that rollback.
+16. **Release state is hash-linked.** The cloud record carries a canonical
+    SHA-256 digest of its generation and deployable state plus the preceding
+    digest. A torn or stale directive is refused before side effects; a real
+    rollback links exactly one new state and an unchanged run preserves the
+    lineage.
 
 ## Layout
 
