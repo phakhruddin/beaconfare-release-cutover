@@ -135,6 +135,24 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.18.0: absent-proof recovery is explicit and deterministic
+
+The v0.17.0 panel exposed ambiguity in the state-recovery setup: depending on
+earlier candidate behavior, the official standby proof could be empty or stale.
+Those states intentionally have different public meanings. Empty proof after
+worker/cache loss must be independently reconstructed for the intact standby;
+nonempty mismatching proof is evidence of external task replacement and must
+be cleared so a later request uses candidate verification.
+
+This version keeps that safety boundary and makes the tested state
+deterministic. Before the handoff, the verifier makes only the official standby
+proof absent while leaving tasks and auxiliary record attributes untouched.
+The public contract now explicitly says those extra attributes are ignored and
+cannot suppress recovery. The fresh no-release worker must self-test every
+current preview task, persist their exact identities, change no routing or
+task, and leave generation unchanged. A second fresh worker can then authorize
+rollback solely from the durable proof.
+
 ### v0.17.0: repair must survive worker loss
 
 The task already required repair after a managed listener and standby service
@@ -206,9 +224,11 @@ kept traffic healthy but treated a warm standby with no exact task proof as a
 candidate and reported `promoted` instead of recovering proof and reporting
 `rolled_back`. The public instruction, record contract and executable
 obligation now state the complete handoff invariant: a no-release fresh-worker
-run independently proves the existing preview tasks when evidence is absent or
-stale, persists that exact set without changing serving traffic, and a later
-request listener-swaps onto those tasks as a rollback. This is the same
+run independently proves the existing preview tasks when official evidence is
+absent, persists that exact set without changing serving traffic, and a later
+request listener-swaps onto those tasks as a rollback. Version 0.16 later made
+explicit that nonempty mismatching evidence instead proves task replacement
+and must be cleared. This is the same
 current-task safety rule as ordinary rollback, made explicit at the cache-loss
 boundary rather than relying on an inference from separate paragraphs.
 

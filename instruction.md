@@ -178,9 +178,11 @@ through `deploy.sh`, after the last release.
     next runs continue from the record: nothing serving changes, no task
     starts or stops, and the warm standby can still be rolled back to. If its
     exact current-task proof is missing, the no-release recovery run
-    independently self-tests the existing preview tasks and records that
-    proof. A nonempty proof whose identities no longer match shows an external
-    task restart, even on a fresh worker: it must be cleared, not rebuilt.
+    independently self-tests every existing preview task and records that
+    proof. Extra record attributes are ignored and may not suppress this
+    required recovery. A nonempty proof whose identities no longer match
+    shows an external task restart, even on a fresh worker: it must be
+    cleared, not rebuilt.
     A later fresh worker must recover an intact proof from the record
     rather than from a local cache: its request for the same warm release
     must be `rolled_back`, not a cache-loss `promoted` candidate. Neither

@@ -302,12 +302,12 @@
       "weight": 8,
       "fidelity": "real",
       "implementation": "executable",
-      "given": "the cloud release record contract in release-record.md",
-      "when": "the preceding defective-release recovery promotes a known-good release, worker A is replaced by a fresh copy retaining only infra/terraform.tfstate and a no-release run reconstructs and persists exact preview-task proof for its intact warm standby; worker A is then replaced again before worker B requests that standby's release",
+      "given": "the cloud release record contract in release-record.md and an intact verified warm standby whose official recorded proof is absent",
+      "when": "the preceding defective-release recovery promotes a known-good release, the official standby proof is made absent without changing its running tasks or any auxiliary record attributes, worker A is replaced by a fresh copy retaining only infra/terraform.tfstate and a no-release run reconstructs and persists exact preview-task proof; worker A is then replaced again before worker B requests that standby's release",
       "then": [
         "before and after every run the record matches what is deployed: live color, task counts, the release each non-idle color serves and the manifest's last request",
         "the promotion moves the generation by exactly one",
-        "on fresh worker A the no-release run changes no routing, starts or stops no task, reconstructs any missing or stale intact-warm-standby proof through preview, persists it in the record, records unchanged and keeps the generation",
+        "on fresh worker A the no-release run ignores auxiliary record attributes, self-tests every current task of the intact verified warm standby through preview, persists the resulting exact proof, changes no routing or task, records unchanged and keeps the generation",
         "fresh worker B has none of worker A's local files; it recovers the proof from the record and its request rolls back to the warm standby (rather than promoting it as a cache-loss candidate), reuses exactly its tasks and moves the generation by exactly one",
         "no production request fails"
       ],

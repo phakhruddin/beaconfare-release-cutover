@@ -821,10 +821,23 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         problems.append(f"the recovery promotion did not leave a warm pair: live={len(new_live_tasks)}, "
                         f"standby={len(warm)}")
 
-    # 2. A fresh worker: everything but Terraform state is gone.
+    # 2. Make the official standby proof deterministically absent without
+    # changing a task. This models durable proof lost at the same handoff as
+    # the worker cache. Other record attributes deliberately remain: the
+    # public contract allows and ignores them, so a private invalidation marker
+    # cannot override the absent-proof recovery rule.
+    item = cloud.ddb.get_item(TableName=cfg.lock_table, Key=RECORD_KEY,
+                              ConsistentRead=True).get("Item")
+    if not item:
+        raise SubmissionFailure("the release record disappeared before the fresh-worker handoff")
+    item[f"{standby}_proof_release"] = {"S": ""}
+    item[f"{standby}_proof_tasks"] = {"L": []}
+    cloud.ddb.put_item(TableName=cfg.lock_table, Item=item)
+
+    # 3. A fresh worker: everything but Terraform state is gone.
     _fresh_worker(trial)
 
-    # 3. No release requested: nothing serving changes, no task starts or stops.
+    # 4. No release requested: nothing serving changes, no task starts or stops.
     report, failure = release_under_traffic(trial, None, "deploy-record-fresh-worker")
     if failure:
         raise failure
@@ -850,14 +863,14 @@ def test_state_recovered_from_record(trial: TrialContext) -> CheckResult:
         problems.append(f"a run that changed nothing moved the record generation to {record.get('generation')}, "
                         f"expected {generation}")
 
-    # 4. Interrupt/restart the recovery worker itself.  The second worker has
+    # 5. Interrupt/restart the recovery worker itself.  The second worker has
     # neither the original cache nor the first recovery worker's cache, so a
     # rollback can be authorized only by the proof worker A persisted in the
     # cloud record.  This is deliberately distinct from merely checking the
     # record while worker A's local files remain available.
     _fresh_worker(trial)
 
-    # 5. The warm standby is still a rollback target, found from the record.
+    # 6. The warm standby is still a rollback target, found from the record.
     report, failure = release_under_traffic(trial, standby_version, "deploy-record-restarted-worker-rollback")
     if failure:
         raise failure

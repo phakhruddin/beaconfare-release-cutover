@@ -217,8 +217,9 @@ clear_proof() {  # clear_proof <color>
   PROOFS=$(jq -c --arg c "$1" '.[$c] = {release: "", tasks: []}' <<<"$PROOFS")
 }
 proof_empty() {  # proof_empty <color>
-  # Empty proof is recoverable after a worker handoff. A nonempty proof that
-  # fails to match shows external task replacement and must stay ineligible.
+  # Empty official proof is recoverable after a worker handoff. Extra record
+  # attributes are not proof and cannot suppress this recovery. A nonempty
+  # proof that fails to match shows external task replacement.
   jq -e --arg c "$1" '.[$c].release == "" and .[$c].tasks == []' <<<"$PROOFS" >/dev/null
 }
 
@@ -601,9 +602,10 @@ fi
 if [ "$REQUESTED" = "$LIVE_VERSION" ] && [ "$STANDBY_COUNT" -gt 0 ]; then
   if ! proof_matches "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
     if "$FRESH_RECORD_WORKER" && proof_empty "$STANDBY_COLOR"; then
-      # No local cache or durable proof survived, but the record says this is
-      # an intact warm standby. Prove it independently. A nonempty proof that
-      # fails to match is an external task replacement, handled by clearing it.
+      # No local cache or official durable proof survived, but the record says
+      # this is an intact warm standby. Prove it independently. Auxiliary
+      # record fields are ignored; a nonempty mismatching proof is instead
+      # external task replacement and is handled by clearing it.
       log "fresh worker is rebuilding proof for warm $STANDBY_COLOR/$STANDBY_VERSION"
       if selftest "$PREVIEW_URL" "$STANDBY_COLOR" "$STANDBY_VERSION"; then
         set_proof "$STANDBY_COLOR" "$STANDBY_VERSION" "$SELFTEST_TASKS"
