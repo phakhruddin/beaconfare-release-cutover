@@ -7,6 +7,8 @@ dependent obligation as an independent model failure.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import json
 import signal
 import time
@@ -124,6 +126,18 @@ def _arm(seconds: int) -> None:
     signal.alarm(max(1, min(int(seconds), 86400)))
 
 
+def _release_completed_check_memory() -> None:
+    """Return transient verifier buffers between long lifecycle checks."""
+    gc.collect()
+    try:
+        # The verifier image is Debian/glibc. Terraform JSON and captured
+        # subprocess output can leave large free arenas in a process that runs
+        # for more than an hour; return those arenas to the container.
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
 class TrialSession:
     def __init__(self) -> None:
         self.spec = load_obligations(SPEC_PATH)
@@ -228,9 +242,16 @@ class TrialSession:
             signal.alarm(0)
             self._armed_seconds = 0
             signal.signal(signal.SIGALRM, previous)
-            outcome = self.results[-1].outcome.value if self.results and \
-                self.results[-1].obligation_id == identifier else "unrecorded"
-            self._progress(f"end {identifier}: {outcome}")
+            if identifier == "declared.identity_data_logs" and self._context is not None:
+                # No later obligation reads the full Terraform state document.
+                self._context.facts.pop("state", None)
+            _release_completed_check_memory()
+            completed = self.results[-1] if self.results and \
+                self.results[-1].obligation_id == identifier else None
+            outcome = completed.outcome.value if completed else "unrecorded"
+            detail = f" — {completed.summary[:600]}" if completed and \
+                completed.outcome is not Outcome.PASS else ""
+            self._progress(f"end {identifier}: {outcome}{detail}")
 
     def _run(self, identifier: str, check: Check) -> None:
         started = time.monotonic()

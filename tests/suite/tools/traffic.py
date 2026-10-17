@@ -51,9 +51,14 @@ class TrafficReport:
 
 
 class Traffic:
-    """Context manager: steady production traffic until exit."""
+    """Context manager: bounded, steady production traffic until exit.
 
-    def __init__(self, api: Api, interval: float = 0.5) -> None:
+    POST and GET requests alternate. Long lifecycle operations therefore keep
+    exercising both the write and read paths without growing the emulator's
+    quote table and verifier evidence four times per second.
+    """
+
+    def __init__(self, api: Api, interval: float = 1.0) -> None:
         self.api = api
         self.interval = interval
         self.report = TrafficReport()
@@ -81,11 +86,14 @@ class Traffic:
                 if sample.quote_id:
                     written.append(sample.quote_id)
             self._record(sample)
+            if self._stop.wait(self.interval):
+                break
             if written:
                 read = self.api.get(f"/quotes/{rng.choice(written[-50:])}")
                 self._record(Sample(time.monotonic(), "GET", read.status, read.version,
                                     read.color, read.error))
-            self._stop.wait(self.interval)
+                if self._stop.wait(self.interval):
+                    break
 
     def __enter__(self) -> "Traffic":
         self._thread.start()

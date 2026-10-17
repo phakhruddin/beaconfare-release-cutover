@@ -20,20 +20,18 @@ mkdir -p "$CONFIG_DIR"
 warmup=$(( 0x$(rand 1) % 16 + 20 ))
 APPLICATION_DIR="$APPLICATION_DIR" DEFECTIVE_VERSION="$defective" WARMUP_SECONDS="$warmup" /bin/sh "$APPLICATION_DIR/build.sh"
 
-# Keep every release image referenced by a running container for the life of
-# this environment. An image no container uses can be removed from the shared
-# daemon while the environment is still running, and a later release would
-# then fail to start with "pull access denied". The containers carry this
-# compose project's labels, so `compose down --remove-orphans` removes them.
+# Keep every release image referenced for longer than the agent's 43,200 s
+# budget. These tiny keepers do no work, never restart, and remove themselves
+# after thirteen hours even if abnormal teardown misses them.
 project="${COMPOSE_PROJECT_NAME:-beaconfare}"
 for version in 3.4.0 3.5.0 3.6.0; do
   name="${project}-release-keeper-$(echo "$version" | tr . -)"
   docker rm -f "$name" >/dev/null 2>&1 || true
-  docker run -d --name "$name" --network none --restart unless-stopped \
+  docker run -d --rm --name "$name" --network none \
     --label "com.docker.compose.project=${project}" \
     --label "com.docker.compose.service=release-keeper-$(echo "$version" | tr . -)" \
     --label "com.docker.compose.oneoff=False" \
-    --entrypoint sleep "beaconfare/api:$version" infinity >/dev/null
+    --entrypoint sleep "beaconfare/api:$version" 46800 >/dev/null
 done
 
 image_id() {

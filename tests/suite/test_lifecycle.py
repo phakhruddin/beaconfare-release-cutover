@@ -25,6 +25,16 @@ from .tools.terraform import describe_changes, disruptive_changes, plan
 from .tools.traffic import Traffic, TrafficReport
 from .tools.trial import TrialContext, obligation
 
+MAX_RETAINED_QUOTE_IDS = 64
+
+
+def _remember_quote_ids(trial: TrialContext, report: TrafficReport) -> None:
+    """Retain a representative bounded set for later persistence probes."""
+    retained = trial.facts.setdefault("quote_ids", [])
+    room = max(0, MAX_RETAINED_QUOTE_IDS - len(retained))
+    if room:
+        retained.extend(report.quote_ids()[:room])
+
 
 def release_under_traffic(trial: TrialContext, release: str | None, label: str) -> tuple[TrafficReport, BaseException | None]:
     """Run deploy.sh while production traffic flows. Never raises for deploy."""
@@ -37,7 +47,7 @@ def release_under_traffic(trial: TrialContext, release: str | None, label: str) 
             failure = exc
         time.sleep(2)
     report = traffic.report
-    trial.facts.setdefault("quote_ids", []).extend(report.quote_ids())
+    _remember_quote_ids(trial, report)
     try:
         trial.reload_manifest()
     except Exception:  # noqa: BLE001 - judged by the caller
@@ -914,7 +924,7 @@ def _crash_run(trial: TrialContext, label: str, release: str, point: str) -> tup
         status, _seconds = deploy_raw(trial.config.submission_dir, trial.config.logs_dir, label,
                                       release=release, fault_point=point)
         time.sleep(2)
-    trial.facts.setdefault("quote_ids", []).extend(traffic.report.quote_ids())
+    _remember_quote_ids(trial, traffic.report)
     return status, traffic.report
 
 

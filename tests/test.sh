@@ -51,4 +51,15 @@ if has_valid_reward; then
   jq -r '.reward' /logs/verifier/reward.json >/logs/verifier/reward.txt
   exit 0
 fi
+
+# SIGKILL can terminate pytest before its session fixture reaches the scored
+# destroy obligation. Preserve the invalid result first, then make one bounded
+# best-effort attempt to stop this trial's workload so it cannot contaminate a
+# retry or a neighboring panel run. A broken candidate cleanup script cannot
+# turn an invalid trial into a score or keep this wrapper alive indefinitely.
+if [[ "${pytest_rc:-3}" -eq 137 ]]; then
+  ensure_result "$pytest_rc" "$LINENO"
+  timeout 180 /workspace/submission/destroy.sh \
+    >>/logs/verifier/emergency-cleanup.txt 2>&1 || true
+fi
 exit "${pytest_rc:-3}"

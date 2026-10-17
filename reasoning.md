@@ -135,6 +135,34 @@ is discarded on the first verifier run.
 
 Twenty obligations, 100 points. Only 100 passes.
 
+### v0.19.0: bounded continuous-traffic evidence
+
+An independent v0.18.0 oracle completed five lifecycle obligations and was
+then killed with exit 137 before it could emit a scored report. The preceding
+oracle passed all 20 obligations, but its long lifecycle phases retained
+hundreds to more than 1,600 request samples each while every traffic loop made
+both a POST and a GET twice per second. That generated unnecessary verifier,
+application and persistent-emulator load during a 78-minute run.
+
+This version preserves every public behavior check while reducing that load.
+Traffic now alternates POST and GET at one request per second, so both paths
+remain continuously exercised across every deployment and listener change,
+the full ordered sample stream still detects failures and switch-backs, and
+each long operation still produces many independent observations. Later
+persistence probes retain at most 64 quote identities, in addition to the
+eight pre-cutover quotes, instead of rereading every generated quote. After
+each obligation, the verifier also collects cyclic garbage and returns freed
+allocator arenas from Terraform JSON and captured subprocess logs; it drops
+the cached Terraform-state document immediately after its final declaration
+check. Release images are pinned by idle, non-restarting keepers that remove
+themselves shortly after the enclosing agent or verifier time budget, so an
+abnormal teardown cannot leave permanent image-reference containers. If
+pytest itself is killed before the scored destroy obligation, the wrapper
+first records an invalid result and then gives the submission's normal destroy
+path one bounded best-effort cleanup attempt, so an invalid trial does not
+leave application processes to contaminate later runs. No obligation, score,
+deadline, fault, safety condition or candidate requirement changes.
+
 ### v0.18.0: absent-proof recovery is explicit and deterministic
 
 The v0.17.0 panel exposed ambiguity in the state-recovery setup: depending on
