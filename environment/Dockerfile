@@ -12,30 +12,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     AWS_ENDPOINT_URL=http://aws:4566 \
     TF_CLI_CONFIG_FILE=/etc/terraformrc.offline
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl unzip jq git ripgrep procps \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir awscli boto3 requests jsonschema pyyaml pytest
-
-# Terraform plus an offline provider mirror, so init does not depend on the
-# registry at solve time.
-RUN curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 -o /tmp/terraform.zip \
-      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
-    && unzip -q /tmp/terraform.zip -d /usr/local/bin \
-    && rm /tmp/terraform.zip \
-    && mkdir -p /opt/terraform-provider-mirror /tmp/provider-seed \
-    && printf '%s\n' \
-      'terraform {' \
-      '  required_providers {' \
-      '    aws = {' \
-      '      source = "hashicorp/aws"' \
-      "      version = \"=${AWS_PROVIDER_VERSION}\"" \
-      '    }' \
-      '  }' \
-      '}' >/tmp/provider-seed/main.tf \
-    && TF_CLI_CONFIG_FILE=/dev/null terraform -chdir=/tmp/provider-seed init -backend=false -input=false \
-    && TF_CLI_CONFIG_FILE=/dev/null terraform -chdir=/tmp/provider-seed providers mirror /opt/terraform-provider-mirror \
-    && rm -rf /tmp/provider-seed \
+COPY vendor/ /opt/offline/
+RUN dpkg --unpack /opt/offline/debs/*.deb \
+    && dpkg --configure -a \
+    && pip install --no-index --find-links=/opt/offline/wheels awscli boto3 requests jsonschema pyyaml pytest \
+    && python -m zipfile -e /opt/offline/terraform.zip /usr/local/bin \
+    && python -m zipfile -e /opt/offline/tofu.zip /usr/local/bin \
+    && mkdir -p /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
+    && cat /opt/offline/beaconfare-aws-provider.part-00 /opt/offline/beaconfare-aws-provider.part-01 /opt/offline/beaconfare-aws-provider.part-02 > /tmp/aws-provider.zip \
+    && python -m zipfile -e /tmp/aws-provider.zip /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
+    && chmod 0755 /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64/terraform-provider-aws_v${AWS_PROVIDER_VERSION}_x5 \
     && printf '%s\n' \
       'disable_checkpoint = true' \
       'provider_installation {' \
@@ -43,14 +29,9 @@ RUN curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 -o /tmp/terraform.zi
       '    path = "/opt/terraform-provider-mirror"' \
       '    include = ["registry.terraform.io/hashicorp/aws"]' \
       '  }' \
-      '}' >/etc/terraformrc.offline
-
-# OpenTofu is offered as an alternative; the contracts accept either tool.
-RUN curl -fsSL --retry 6 --retry-all-errors --retry-delay 5 -o /tmp/tofu.zip \
-      "https://github.com/opentofu/opentofu/releases/download/v1.10.6/tofu_1.10.6_linux_amd64.zip" \
-    && unzip -q /tmp/tofu.zip tofu -d /usr/local/bin \
-    && rm /tmp/tofu.zip \
-    && chmod 0755 /usr/local/bin/tofu \
+      '}' >/etc/terraformrc.offline \
+    && chmod 0755 /usr/local/bin/terraform /usr/local/bin/tofu \
+    && rm /tmp/aws-provider.zip \
     && for tool in bash curl jq terraform tofu aws python3; do command -v "$tool" >/dev/null; done
 
 COPY workspace/ /workspace/

@@ -1,8 +1,8 @@
 services:
   main:
     build:
-      context: .
-      dockerfile: runtime/Dockerfile
+      context: ..
+      dockerfile: tests/runtime/Dockerfile
       target: verifier
     command: ["sleep", "infinity"]
     user: "10001:10001"
@@ -34,8 +34,8 @@ services:
 
   runtime-setup:
     build:
-      context: .
-      dockerfile: runtime/Dockerfile
+      context: ..
+      dockerfile: tests/runtime/Dockerfile
       target: runtime-setup
     command: ["/bin/sh", "/runtime.sh"]
     environment:
