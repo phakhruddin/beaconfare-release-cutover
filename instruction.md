@@ -42,10 +42,10 @@ The contracts are under `/workspace/contracts/`:
   proof and canonical state lineage: a rollback target must be proven on the
   exact warm tasks that would receive production traffic, and each generation
   change must link to the preceding state digest.
-- `crash-recovery.md` defines two named crash points that `deploy.sh` must
+- `crash-recovery.md` defines three named crash points that `deploy.sh` must
   honour when `BEACONFARE_FAULT_POINT` asks for one, what a crashed run
-  leaves behind (exit `137`, its lock still held, the record untouched) and
-  how the next run recovers.
+  leaves behind (exit `137` and its lock still held), and how the next run
+  recovers on either side of the durable record commit.
 - `infrastructure.md` is the infrastructure index. Its linked files under
   `services/` define the network, load balancer, ECS, DynamoDB, IAM and
   logging requirements.
@@ -189,9 +189,12 @@ through `deploy.sh`, after the last release.
     must be `rolled_back`, not a cache-loss `promoted` candidate. Neither
     recovery run may change routing or start or stop a task.
 11. A run asked to crash at `staged` or `switched` stops there with exit
-    `137`, leaving its lock held and the release record untouched. Once its
-    lease is expired, the next run restores the recorded state, not what the
-    crashed run left behind, without failing a production request or
+    `137`, leaving its lock held and the release record untouched. A run
+    asked to crash at `committed` stops after its final record is durable but
+    before writing the manifest or releasing the lock. Once the lease is
+    expired, a fresh worker converges on the record: it restores the prior
+    state after a pre-commit crash, but preserves the newly committed cutover
+    after a post-commit crash, without failing a production request or
     disturbing a color that already runs its recorded release.
 12. An operator may edit the release record between runs (switch the live
     color, change a color's release or count, revoke releases from
@@ -222,8 +225,8 @@ The score is weighted by category. A run passes only at 100.
 | Verified promotion and defective-release rejection | 12 |
 | Exclusive release lock and side-effect-free refusals | 11 |
 | Durable release record, independent recovery and state lineage | 16 |
-| Crash points and takeover recovery | 8 |
-| Operator-controlled state and current-task rollback proof | 29 |
+| Pre- and post-commit crash recovery | 16 |
+| Operator-controlled state and current-task rollback proof | 21 |
 | Instant rollback, drift and repair, stable state | 11 |
 | Blue/green topology | 5 |
 | Product traffic | 1 |

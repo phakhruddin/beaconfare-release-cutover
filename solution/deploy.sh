@@ -26,8 +26,9 @@ log() { echo "[deploy] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 # Named crash points (contracts/crash-recovery.md): stop like a killed
-# process. The lock stays held, the record and manifest are not written and
-# nothing is undone; only our private temp directory is removed.
+# process. The lock stays held and nothing is undone. At `staged` and
+# `switched` neither the record nor manifest has been written; at `committed`
+# the final record is durable but the manifest has not been written.
 FAULT_POINT="${BEACONFARE_FAULT_POINT:-}"
 crash_at() {
   [ "$FAULT_POINT" = "$1" ] || return 0
@@ -765,6 +766,7 @@ STATE_DIGEST=$(state_digest "$GENERATION")
       green_proof_tasks: {L: [$proofs.green.tasks[] | {S: .}]}}' "$STATE_FILE")" >/dev/null \
   || die "could not write the release record"
 log "release record generation $GENERATION written"
+crash_at committed
 
 # ---- 5. manifest ----------------------------------------------------------------------
 jq -n \

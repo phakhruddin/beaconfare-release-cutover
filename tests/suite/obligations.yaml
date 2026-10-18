@@ -33,16 +33,17 @@
     },
     {
       "id": "crash_recovery",
-      "label": "Crash points and takeover recovery",
-      "weight": 8,
+      "label": "Pre- and post-commit crash recovery",
+      "weight": 16,
       "obligations": [
-        "lifecycle.crash_points_recovered"
+        "lifecycle.crash_points_recovered",
+        "lifecycle.committed_crash_recovered"
       ]
     },
     {
       "id": "operator_record",
       "label": "Operator-controlled state and current-task rollback proof",
-      "weight": 29,
+      "weight": 21,
       "obligations": [
         "lifecycle.operator_directives_applied",
         "lifecycle.unverified_standby_proven",
@@ -332,9 +333,24 @@
       "deadline_seconds": 3000
     },
     {
+      "id": "lifecycle.committed_crash_recovered",
+      "plane": "lifecycle",
+      "weight": 8,
+      "fidelity": "real",
+      "implementation": "executable",
+      "given": "the committed crash point in crash-recovery.md and a proven warm standby",
+      "when": "an ordinary switch first leaves a deterministic proven warm standby; that standby is then requested under continuous traffic with BEACONFARE_FAULT_POINT=committed, the resulting orphaned lease is expired, the submission is replaced by a fresh copy retaining only infra/terraform.tfstate, and deploy runs with no release requested",
+      "then": [
+        "the interrupted rollback exits 137 after its final record is durable, leaves a live lock and the old manifest, reuses exactly the proven warm tasks and fails no production request",
+        "the committed record independently matches the live routing, releases and counts; its generation advances once, its previous digest is the exact pre-run digest, its state digest recomputes canonically and its outcome is rolled_back",
+        "the fresh-worker recovery preserves the committed routing and every task identity, fails no production request, records unchanged, preserves generation and both digests, writes the new manifest and releases its lock"
+      ],
+      "deadline_seconds": 1500
+    },
+    {
       "id": "lifecycle.operator_directives_applied",
       "plane": "lifecycle",
-      "weight": 7,
+      "weight": 5,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair and rule 5 of release-record.md (operators may edit the record)",
@@ -351,7 +367,7 @@
     {
       "id": "lifecycle.unverified_standby_proven",
       "plane": "lifecycle",
-      "weight": 8,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the verified list in release-record.md and the rollback rule in release-process.md",
@@ -368,7 +384,7 @@
     {
       "id": "lifecycle.current_task_proof_reconciled",
       "plane": "lifecycle",
-      "weight": 9,
+      "weight": 6,
       "fidelity": "real",
       "implementation": "executable",
       "given": "a verified warm blue/green pair whose record contains current-task proof for both colors",
@@ -384,7 +400,7 @@
     {
       "id": "lifecycle.undeployable_record_refused",
       "plane": "lifecycle",
-      "weight": 5,
+      "weight": 4,
       "fidelity": "real",
       "implementation": "executable",
       "given": "the Validity rules in release-record.md and the refusal rules in release-process.md",

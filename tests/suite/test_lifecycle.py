@@ -1137,6 +1137,161 @@ def test_crash_points_recovered(trial: TrialContext) -> CheckResult:
     )
 
 
+@obligation("lifecycle.committed_crash_recovered")
+def test_committed_crash_recovered(trial: TrialContext) -> CheckResult:
+    """A post-commit crash recovers forward from the new durable record."""
+    cfg, cloud = trial.config, trial.cloud
+    before, found = _record_problems(trial, "before committed-crash preparation")
+    if found:
+        raise SubmissionFailure("; ".join(found))
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        raise SubmissionFailure("a lock item remains before the committed-crash check")
+
+    # The preceding staged-crash recovery may legitimately have replaced the
+    # recorded standby tasks and cleared their proof. Make one ordinary switch
+    # first. Whether that request is a rollback or a candidate promotion, it
+    # leaves the former live color warm with its exact live proof, providing a
+    # deterministic rollback target for the committed-boundary experiment.
+    initial_live = live_color(trial)
+    initial_standby = other(initial_live)
+    initial_live_version = before[f"{initial_live}_release"]
+    initial_standby_version = before[f"{initial_standby}_release"]
+    initial_live_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(initial_live))
+    initial_standby_tasks = cloud.running_tasks(trial.cluster, trial.service_arn(initial_standby))
+    if len(initial_live_tasks) != cfg.desired or len(initial_standby_tasks) != cfg.desired:
+        raise SubmissionFailure("the committed-crash preparation requires a warm pair")
+    prepare_report, prepare_failure = release_under_traffic(
+        trial, initial_standby_version, "deploy-crash-committed-prepare")
+    if prepare_failure:
+        raise prepare_failure
+    prepare_problems = [f"committed-crash preparation: {p}" for p in
+                        traffic_problems(prepare_report, {initial_live_version, initial_standby_version})]
+    if not single_changeover(prepare_report, initial_live_version, initial_standby_version):
+        prepare_problems.append("committed-crash preparation switched production back after the first cutover")
+    if live_color(trial) != initial_standby:
+        prepare_problems.append("committed-crash preparation did not switch to the prior standby")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(initial_live)) != initial_live_tasks:
+        prepare_problems.append("committed-crash preparation replaced the former live tasks")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(initial_standby)) != initial_standby_tasks:
+        prepare_problems.append("committed-crash preparation replaced the already-running target tasks")
+    if trial.manifest["release"]["last_request"]["outcome"] not in {"rolled_back", "promoted"}:
+        prepare_problems.append(f"committed-crash preparation recorded {trial.manifest['release']['last_request']}")
+    before, found = _record_problems(trial, "after committed-crash preparation")
+    prepare_problems += found
+    if prepare_problems:
+        raise SubmissionFailure("; ".join(prepare_problems))
+
+    old_live = initial_standby
+    new_live = initial_live
+    old_version = initial_standby_version
+    target_version = initial_live_version
+    old_tasks = initial_standby_tasks
+    target_tasks = initial_live_tasks
+    proof_problems = _current_proof_problems(trial, before, new_live, "committed-crash precondition")
+    if len(old_tasks) != cfg.desired or len(target_tasks) != cfg.desired or proof_problems:
+        raise SubmissionFailure("the committed-crash check requires a proven warm pair: "
+                                + "; ".join(proof_problems))
+
+    manifest_before = cfg.manifest_path.read_bytes() if cfg.manifest_path.is_file() else b""
+    status, report = _crash_run(trial, "deploy-crash-committed", target_version, "committed")
+    problems = [f"committed crash: {p}" for p in traffic_problems(report, {old_version, target_version})]
+    if not single_changeover(report, old_version, target_version):
+        problems.append(f"committed crash: production switched back to {old_version} after serving "
+                        f"{target_version}")
+    if status not in CRASH_STATUSES:
+        problems.append(f"committed crash: exited {status}, expected 137 after the durable record write")
+    lock = _lock_item(cloud.ddb, cfg.lock_table)
+    if not lock:
+        problems.append("committed crash: the interrupted run removed its release lock")
+    else:
+        try:
+            expires = int(lock.get("lease_expires_at", {}).get("N", "0"))
+        except ValueError:
+            expires = 0
+        if expires <= int(time.time()):
+            problems.append(f"committed crash: the interrupted run left a non-live lease {lock}")
+    manifest_after = cfg.manifest_path.read_bytes() if cfg.manifest_path.is_file() else b""
+    if manifest_after != manifest_before:
+        problems.append("committed crash: manifest.json changed after the commit boundary")
+
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (new_live, old_live):
+        problems.append(f"committed crash: routing is production={routing['production']} and "
+                        f"preview={routing['preview']}, expected {new_live}/{old_live}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(new_live)) != target_tasks:
+        problems.append("committed crash: rollback did not reuse exactly the proven warm tasks")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(old_live)) != old_tasks:
+        problems.append("committed crash: the former live tasks were started, stopped or replaced")
+
+    committed = _record(trial) or {}
+    expected_state = {
+        "generation": before["generation"] + 1,
+        "live_color": new_live,
+        "blue_release": before["blue_release"],
+        "green_release": before["green_release"],
+        "blue_count": before["blue_count"],
+        "green_count": before["green_count"],
+    }
+    for key, expected in expected_state.items():
+        if committed.get(key) != expected:
+            problems.append(f"committed crash: record {key} is {committed.get(key)!r}, expected {expected!r}")
+    if committed.get("previous_state_digest") != before["state_digest"]:
+        problems.append("committed crash: previous_state_digest does not equal the exact pre-run digest")
+    if all(key in committed for key in STATE_FIELDS):
+        recomputed = _state_digest(committed)
+        if committed.get("state_digest") != recomputed:
+            problems.append(f"committed crash: state_digest {committed.get('state_digest')!r} does not "
+                            f"recompute to {recomputed}")
+    if (committed.get("last_request_version"), committed.get("last_request_outcome")) \
+            != (target_version, "rolled_back"):
+        problems.append("committed crash: durable last request is not the completed rollback")
+    if committed:
+        problems += _current_proof_problems(trial, committed, new_live, "committed live proof")
+        problems += _current_proof_problems(trial, committed, old_live, "committed standby proof")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+
+    committed_lineage = (committed["generation"], committed["state_digest"],
+                         committed["previous_state_digest"])
+    _fresh_worker(trial)
+    _expire_lease(trial)
+    report, failure = release_under_traffic(trial, None, "deploy-crash-committed-recover")
+    if failure:
+        raise failure
+    problems = [f"committed recovery: {p}" for p in traffic_problems(report, {target_version})]
+    routing = trial.routing()
+    if (routing["production"], routing["preview"]) != (new_live, old_live):
+        problems.append(f"committed recovery: routing changed to {routing}")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(new_live)) != target_tasks:
+        problems.append("committed recovery: the committed live tasks were started, stopped or replaced")
+    if cloud.running_tasks(trial.cluster, trial.service_arn(old_live)) != old_tasks:
+        problems.append("committed recovery: the committed standby tasks were started, stopped or replaced")
+    recovered, found = _record_problems(trial, "after committed recovery")
+    problems += found
+    recovered_lineage = (recovered.get("generation"), recovered.get("state_digest"),
+                         recovered.get("previous_state_digest"))
+    if recovered_lineage != committed_lineage:
+        problems.append(f"committed recovery: lineage changed from {committed_lineage} to {recovered_lineage}")
+    expected_manifest = (target_version, new_live, old_version, old_live,
+                         {"version": target_version, "outcome": "unchanged"})
+    release = trial.manifest["release"]
+    actual_manifest = (release["live_version"], release["live_color"], release["standby_version"],
+                       release["standby_color"], release["last_request"])
+    if actual_manifest != expected_manifest:
+        problems.append(f"committed recovery: manifest release block is {release}")
+    if _lock_item(cloud.ddb, cfg.lock_table):
+        problems.append("committed recovery: the successful recovery did not release its lock")
+    if problems:
+        raise SubmissionFailure("; ".join(problems))
+    return CheckResult(
+        "lifecycle.committed_crash_recovered", Outcome.PASS,
+        f"a rollback to {target_version}/{new_live} crashed after committing generation "
+        f"{committed_lineage[0]}; a fresh worker preserved its exact tasks, routing and lineage, wrote the "
+        "new manifest and released the orphaned lock",
+        details={"requests": report.total, "generation": committed_lineage[0]},
+    )
+
+
 # ---- operator-edited release record (release-record.md, rules 5 and Validity) ----
 
 def _raw_record(trial: TrialContext) -> dict:

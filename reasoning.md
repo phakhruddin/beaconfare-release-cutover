@@ -133,7 +133,39 @@ is discarded on the first verifier run.
 
 ## Score
 
-Twenty-one obligations, 100 points. Only 100 passes.
+Twenty-two obligations, 100 points. Only 100 passes.
+
+### v0.21.0: recovery across the durable commit boundary
+
+The v0.20.0 Realm panel was fully evaluable but did not meet its acceptance
+distribution: three of the six non-Astra runs reached 100. The terminal
+summary establishes saturation, but the individual archives were not
+available in the author worktree, so it does not support attributing any
+candidate-specific defect. This revision instead closes a public lifecycle
+coverage gap in the task itself.
+
+The earlier crash tests exercised only pre-commit failure: at both `staged`
+and `switched`, the cloud may contain partial work but the durable record must
+still describe the old state, so recovery always rolls back to that record.
+The public contract now also defines `committed`, immediately after the final
+release-record write and before manifest creation or lock release. A focused
+eight-point obligation crashes a proven warm rollback there, independently
+checks the new generation, canonical digest link, final outcome, routing and
+exact task reuse while the old manifest remains, replaces the worker, expires
+the orphaned lease, and requires a no-release recovery to preserve the
+committed cutover without replay, rollback or another lineage transition.
+
+| Public requirement | Candidate behavior | Independent observation | Verifier assertion | Weight |
+|---|---|---|---|---:|
+| `crash-recovery.md`: `committed` is after the final record and before manifest/lock cleanup | Stop with 137 at that boundary; leave the lock and completed cloud state | DynamoDB consistent reads, live listeners, ECS task ARNs, production traffic, manifest bytes | `lifecycle.committed_crash_recovered` proves the durable record advanced once while the manifest stayed old | 8 |
+| Recovery converges on the committed record from a fresh worker | Rebuild local cache/manifest without changing serving state | Fresh submission copy retaining only Terraform state, live routing/tasks, canonical digest recomputation | The recovery records `unchanged`, preserves generation and both digests, reuses every task and releases the lock | same obligation |
+
+The reference solution is the known-good implementation. The executable
+known-bad mutation is the v0.20 controller with no `committed` crash call: it
+returns 0 instead of 137 and is rejected by the first assertion of the new
+obligation. The verifier observes properties rather than shell structure or
+resource names. The crash category rises from 8 to 16 points; eight points
+move from overlapping operator/proof cases, leaving the total at 100.
 
 ### v0.20.0: independently recomputable release-state lineage
 

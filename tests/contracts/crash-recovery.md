@@ -18,6 +18,7 @@ names one crash point:
 |---|---|---|
 | `staged` | a **candidate** (case 3 in `release-process.md`) runs in the standby color at `api_desired_count` tasks, every one of them warm, and the preview listener forwards to that color and answers `GET /health/ready` with `200` from the candidate release | the candidate's self-test verdict is acted on, any listener change for promotion or rejection, any scale-in of the candidate, and any change to the release record |
 | `switched` | a **promotion** or a **rollback** has changed the listeners, so production forwards to the new live color and preview to the new standby color | any change to the release record, and the manifest |
+| `committed` | the acting run has written its final release record, including its outcome, proof, generation and state lineage | writing `manifest.json` and releasing the lock |
 
 A run whose request never reaches the named point (for example `switched` on
 a run that rejects its candidate, or any point on a run with no release
@@ -32,9 +33,14 @@ is an acceptable way to do it), and without any cleanup:
 
 - the release lock item is **left in place**, with this run as `holder` and
   its lease still live: a crashed controller cannot release its lock;
-- every release-record attribute documented in `release-record.md`, including
-  the per-color current-task proof, is exactly as it was when the run started
-  (other attributes, for example your own intent markers, may have changed);
+- at `staged` and `switched`, every release-record attribute documented in
+  `release-record.md`, including the per-color current-task proof, is exactly
+  as it was when the run started (other attributes, for example your own
+  intent markers, may have changed);
+- at `committed`, the final release record is already durable and accurately
+  describes the live cloud state left by the run. Its generation and state
+  lineage have advanced exactly as `release-record.md` requires, and its last
+  request records the interrupted run's final outcome;
 - `manifest.json` is not written;
 - nothing the run did in the cloud is undone: the staged candidate keeps
   running, switched listeners stay switched.
@@ -48,9 +54,12 @@ live, a run is refused with `75` like any other live lease. An operator may
 end it early by setting the lock item's `lease_expires_at` to a time in the
 past; the lock item is then an expired lease (rule 3 in `release-lock.md`).
 
-The next run that takes the lock over must restore the **recorded** state,
-not the state the crashed run left in the cloud and not whatever a local
-cache says. With no release requested it:
+The next run that takes the lock over must converge on the **recorded** state,
+not whatever a local cache says. After `staged` or `switched`, this restores
+the prior committed state rather than the pre-commit cloud changes. After
+`committed`, the record already describes the completed cutover, so recovery
+keeps that new state instead of undoing or replaying it. With no release
+requested it:
 
 - makes production forward to the recorded live color and preview to the
   recorded standby color;

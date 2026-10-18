@@ -60,12 +60,13 @@ Traps that carry the difficulty:
     enough on its own: the verifier replaces the submission directory with a
     fresh copy (only Terraform state kept) and the controller must carry on
     without starting or stopping a task.
-13. **Survive a crashed controller.** `BEACONFARE_FAULT_POINT=staged|switched`
-    (`crash-recovery.md`) stops a run with exit `137` right after a candidate
-    is warm behind preview, or right after a promotion/rollback swapped the
-    listeners. The crashed run keeps its lock and leaves the record alone;
-    after the lease is expired, the next run must restore the recorded state
-    (not the cache, not the cloud) without disturbing healthy colors.
+13. **Survive either side of the commit boundary.**
+    `BEACONFARE_FAULT_POINT=staged|switched|committed`
+    (`crash-recovery.md`) stops a run with exit `137` while retaining its
+    lock. Pre-commit crashes leave the record alone and recover backward;
+    `committed` leaves the final record durable but no new manifest, so the
+    next fresh worker must preserve that cutover and recover forward without
+    disturbing healthy colors.
 14. **Operators edit the record; rollback targets must be proven.** The
     record lists `verified` releases. An operator may switch the live color,
     change a color's release or count, or revoke releases; the next run
