@@ -2,8 +2,8 @@
 
 A Dev Cloud reinforcement-learning environment in the **Compute and
 Deployment** taxonomy. The model must build a blue/green release platform for
-an ECS service on an AWS-compatible local control plane using Terraform or
-OpenTofu, then operate it through promotion, rollback, a defective release,
+an ECS service on an AWS-compatible local control plane using Terraform, then
+operate it through promotion, rollback, a defective release,
 repair and destruction, all under live production traffic.
 
 **Taxonomy:** Compute and Deployment · **Difficulty:** hard · **Pass mark:** 100/100

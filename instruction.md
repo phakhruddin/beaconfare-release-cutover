@@ -1,6 +1,6 @@
 You need to build the release platform for **BeaconFare**, the freight quote
 API behind a logistics marketplace. Your job is to provision, release, roll
-back, repair and cleanly destroy it on ECS using Terraform or OpenTofu.
+back, repair and cleanly destroy it on ECS using Terraform.
 
 BeaconFare ships pricing releases every week. Last quarter a release with a
 rounding regression went straight to customers and mispriced freight for an
@@ -20,7 +20,7 @@ or build replacement images.
 
 ## Workspace
 
-The workspace contains Terraform, OpenTofu, the AWS provider, the AWS CLI,
+The workspace contains Terraform, the AWS provider, the AWS CLI,
 Python and common diagnostic tools. It does not expose the Docker CLI or the
 Docker socket. Perform every cloud operation through the provided AWS
 endpoint.
@@ -70,7 +70,7 @@ Configure the AWS provider, and every AWS CLI or SDK call you make, with
 static credentials already in the environment (`test` / `test`).
 
 Read configuration values dynamically from `/workspace/config/config.json` at
-execution time. Terraform or OpenTofu, lifecycle scripts, readiness checks and
+execution time. Terraform, lifecycle scripts, readiness checks and
 manifest generation must not hard code values copied from the current
 contents of that file. The resource prefix, task count and log retention are
 generated fresh for every run, and so is the choice of which later release
@@ -122,10 +122,10 @@ Do not modify the contracts or the supplied images.
   at most 8 MiB of combined output.
 - `manifest.json` is written by every successful `deploy.sh` run. It must
   conform to `contracts/schemas/manifest.schema.json` and contain the real
-  identifiers returned by the AWS APIs and recorded in Terraform or OpenTofu
+  identifiers returned by the AWS APIs and recorded in Terraform
   state, plus the release outcome. Its maximum size is 1 MiB.
-- `infra/` contains the Terraform or OpenTofu `.tf` files. `deploy.sh` must
-  run Terraform or OpenTofu from this directory using local state. Declare
+- `infra/` contains the Terraform `.tf` files. `deploy.sh` must
+  run Terraform from this directory using local state. Declare
   every required cloud resource in the `.tf` files. Resources created only
   with the AWS CLI are not accepted.
 

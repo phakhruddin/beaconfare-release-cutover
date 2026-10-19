@@ -1,6 +1,6 @@
 # Infrastructure
 
-Declare every required cloud resource in Terraform or OpenTofu and keep it in
+Declare every required cloud resource in Terraform and keep it in
 `infra/terraform.tfstate`. Each linked service contract defines the required
 settings and relationships for that resource.
 
@@ -17,7 +17,7 @@ settings and relationships for that resource.
   `<resource_prefix>-legacy-*`.
 - Resources created only with the AWS CLI are not accepted. You may use the CLI
   to inspect health, fetch identifiers, call the API, and change the desired
-  count of an ECS service your Terraform or OpenTofu manages (see
+  count of an ECS service your Terraform manages (see
   `runtime.md`).
 
 ## Service Contracts

@@ -78,7 +78,7 @@ The image writes one JSON object per line to stdout.
   definition of its own.
 - **ECS deployments are simplified: a new task definition does not replace
   running tasks.** When the task definition of a service that is running
-  tasks changes (through Terraform, OpenTofu or the API), the service records
+  tasks changes (through Terraform or the API), the service records
   the new task definition, but the tasks already running keep running the
   old one; no replacement deployment happens. Tasks the service starts
   afterwards, for example when it is scaled up from `0`, use the new task
@@ -88,19 +88,19 @@ The image writes one JSON object per line to stdout.
   periods, the deployment circuit breaker and automatic rollback are
   recorded but **not acted on**. Changing only `desired_count` does not
   replace running tasks either.
-- **A Terraform or OpenTofu update of an existing service's
+- **A Terraform update of an existing service's
   `desired_count` is not applied.** The apply succeeds and state records the
   new value, but the service keeps its previous desired count. The count a
   service is **created** with is honored, and so is
   `aws ecs update-service --desired-count` on an existing service. Changing
-  the task definition through Terraform or OpenTofu works normally.
+  the task definition through Terraform works normally.
 - **Each listener port is one socket on the endpoint host.** A listener on
   port *P* is reached at `http://<host of aws_endpoint_url>:P`. When only one
   listener uses a port, any `Host` header reaches it.
 - **Security groups and IAM policies are recorded, not enforced.** They are
   checked as declarations only.
 - **A loaded host can delay provider start-up.** Occasionally a Terraform or
-  OpenTofu command fails with `Failed to load plugin schemas` and `failed to
+  Terraform command fails with `Failed to load plugin schemas` and `failed to
   instantiate provider`, ending in `timeout while waiting for plugin to
   start` (the timeout may be line-wrapped), or with `Failed to load plugin
   schemas` followed by `GetProviderSchema request was cancelled`. Both occur

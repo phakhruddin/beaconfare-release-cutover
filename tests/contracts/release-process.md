@@ -72,7 +72,7 @@ A refused run:
 - exits within **30 seconds**, with the status above;
 - changes **nothing**: no file in the submission directory (configuration
   files, Terraform state, any local state cache and `manifest.json`
-  included), no Terraform or OpenTofu command that writes state, and no AWS
+  included), no Terraform command that writes state, and no AWS
   write of any kind, the release lock table and the release record included;
 - **repairs nothing**, even when the cloud has drifted from the recorded
   release state: swapped listeners stay swapped and wrong task counts stay

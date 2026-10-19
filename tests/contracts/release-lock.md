@@ -28,7 +28,7 @@ Other attributes are allowed and ignored.
    succeeds only if no lock item exists, or if the existing item's
    `lease_expires_at` is in the past.
    When the lock table does not exist yet (the very first deployment),
-   create it with Terraform or OpenTofu first, then acquire the lock before
+   create it with Terraform first, then acquire the lock before
    any release action: staging a candidate, changing a listener or changing
    a task count.
 2. **Respect a live lease.** If another holder's lease has not expired, the

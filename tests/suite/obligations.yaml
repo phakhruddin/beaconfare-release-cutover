@@ -121,7 +121,7 @@
       "hard_gate": "declared.managed_iac",
       "fidelity": "state",
       "implementation": "executable",
-      "given": "a submission containing Terraform or OpenTofu infrastructure",
+      "given": "a submission containing Terraform infrastructure",
       "when": "the verifier reads machine-readable state",
       "then": [
         "state parses and every scored resource family is managed",

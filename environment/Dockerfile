@@ -17,7 +17,6 @@ RUN dpkg --unpack /opt/offline/debs/*.deb \
     && dpkg --configure -a \
     && pip install --no-index --find-links=/opt/offline/wheels awscli boto3 requests jsonschema pyyaml pytest \
     && python -m zipfile -e /opt/offline/terraform.zip /usr/local/bin \
-    && python -m zipfile -e /opt/offline/tofu.zip /usr/local/bin \
     && mkdir -p /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
     && cat /opt/offline/beaconfare-aws-provider.part-00 /opt/offline/beaconfare-aws-provider.part-01 /opt/offline/beaconfare-aws-provider.part-02 > /tmp/aws-provider.zip \
     && python -m zipfile -e /tmp/aws-provider.zip /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
@@ -30,9 +29,9 @@ RUN dpkg --unpack /opt/offline/debs/*.deb \
       '    include = ["registry.terraform.io/hashicorp/aws"]' \
       '  }' \
       '}' >/etc/terraformrc.offline \
-    && chmod 0755 /usr/local/bin/terraform /usr/local/bin/tofu \
+    && chmod 0755 /usr/local/bin/terraform \
     && rm /tmp/aws-provider.zip \
-    && for tool in bash curl jq terraform tofu aws python3; do command -v "$tool" >/dev/null; done
+    && for tool in bash curl jq terraform aws python3; do command -v "$tool" >/dev/null; done
 
 COPY workspace/ /workspace/
 RUN chmod -R a+rX /workspace

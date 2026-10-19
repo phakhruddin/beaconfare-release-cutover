@@ -1,6 +1,6 @@
 """Declaration plane.
 
-These read Terraform or OpenTofu state. They prove the submission *declared*
+These read Terraform state. They prove the submission *declared*
 the blue/green topology, the quotes table, the identities and the logging.
 Where the endpoint records a setting without enforcing it (IAM, security
 groups), that is all these checks claim.
@@ -115,7 +115,7 @@ def _role_policies(state_json: dict[str, Any], role: dict[str, Any]) -> list[dic
 
 @obligation("declared.managed_iac")
 def test_infrastructure_is_managed(trial: TrialContext) -> CheckResult:
-    """Every scored resource family is declared in Terraform or OpenTofu."""
+    """Every scored resource family is declared in Terraform."""
     state_json = _state(trial)
     missing = []
     for resource_type, minimum in REQUIRED_TYPES.items():
