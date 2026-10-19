@@ -15,11 +15,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY vendor/ /opt/offline/
 RUN dpkg --unpack /opt/offline/debs/*.deb \
     && dpkg --configure -a \
-    && pip install --no-index --find-links=/opt/offline/wheels awscli boto3 requests jsonschema pyyaml pytest \
+    && pip install --no-index --find-links=/opt/offline/wheels awscli boto3 requests jsonschema pyyaml pytest zstandard \
     && python -m zipfile -e /opt/offline/terraform.zip /usr/local/bin \
     && mkdir -p /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
-    && cat /opt/offline/beaconfare-aws-provider.part-00 /opt/offline/beaconfare-aws-provider.part-01 /opt/offline/beaconfare-aws-provider.part-02 > /tmp/aws-provider.zip \
-    && python -m zipfile -e /tmp/aws-provider.zip /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64 \
+    && cat /opt/offline/beaconfare-aws-provider-zst.part-00 /opt/offline/beaconfare-aws-provider-zst.part-01 > /tmp/aws-provider.zst \
+    && python -c 'import zstandard,sys; open(sys.argv[2], "wb").write(zstandard.ZstdDecompressor().decompress(open(sys.argv[1], "rb").read()))' /tmp/aws-provider.zst /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64/terraform-provider-aws_v${AWS_PROVIDER_VERSION}_x5 \
     && chmod 0755 /opt/terraform-provider-mirror/registry.terraform.io/hashicorp/aws/${AWS_PROVIDER_VERSION}/linux_amd64/terraform-provider-aws_v${AWS_PROVIDER_VERSION}_x5 \
     && printf '%s\n' \
       'disable_checkpoint = true' \
@@ -30,7 +30,7 @@ RUN dpkg --unpack /opt/offline/debs/*.deb \
       '  }' \
       '}' >/etc/terraformrc.offline \
     && chmod 0755 /usr/local/bin/terraform \
-    && rm /tmp/aws-provider.zip \
+    && rm /tmp/aws-provider.zst \
     && for tool in bash curl jq terraform aws python3; do command -v "$tool" >/dev/null; done
 
 COPY workspace/ /workspace/
