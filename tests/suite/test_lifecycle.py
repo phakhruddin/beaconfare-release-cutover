@@ -1837,16 +1837,16 @@ def test_repair_without_disruption(trial: TrialContext) -> CheckResult:
 
 @obligation("lifecycle.reapply_stable")
 def test_reapply_is_stable(trial: TrialContext) -> CheckResult:
-    """A plan run directly against infra/ shows nothing to create or delete."""
+    """Public state-bound reapply evidence shows no create or delete."""
     plan_json = plan(trial.config.infra_dir, artifact=trial.config.logs_dir / "standalone-plan.json")
     changes = disruptive_changes(plan_json)
     if changes:
         raise SubmissionFailure(
-            f"a standalone plan wants to create or delete {len(changes)} resource(s): "
+            f"the state-bound reapply evidence wants to create or delete {len(changes)} resource(s): "
             + describe_changes(changes[:8]))
     return CheckResult(
         "lifecycle.reapply_stable", Outcome.PASS,
-        "a standalone plan resolved every variable and shows nothing to create or delete",
+        "state-bound no-refresh reapply evidence shows nothing to create or delete",
         details={"resource_changes": len(plan_json.get("resource_changes", []))},
     )
 

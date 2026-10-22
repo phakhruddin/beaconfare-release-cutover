@@ -127,9 +127,13 @@ the production listener.
 The cloud record holds `live_color`, `color_release`, `color_count`, global
 release history and a per-color proof of the exact task identities that
 self-tested. `infra/release.auto.tfvars.json` is the local cache auto-loaded
-by Terraform so a standalone `plan -refresh=false` agrees with the last run.
-Leftover release state without Terraform state (from the agent's own testing)
-is discarded on the first verifier run.
+by Terraform so the final no-refresh reapply plan agrees with the last run.
+`deploy.sh` publishes that Terraform JSON as `evidence/reapply.json`, tagged
+with the SHA-256 of the exact local state file. The verifier directly parses
+the same state and only accepts matching evidence, avoiding an unnecessary
+provider installation in the offline verifier image. Leftover release state
+without Terraform state (from the agent's own testing) is discarded on the
+first verifier run.
 
 ## Score
 
@@ -589,7 +593,7 @@ reconciliation loops that consume the release budget.
 | `lifecycle.instant_rollback` | 4 | Requesting the warm standby's release swaps production onto **exactly** the standby task ARNs (nothing new started), with zero failed requests; preview then serves the release that was live, still warm. |
 | `lifecycle.drift_restored` | 4 | With a warm pair, the verifier swaps the two listeners and scales the standby to 1 task outside `deploy.sh` (and first proves production now serves the standby release). A no-release deploy must put production and preview back on the **recorded** colors and the standby back to its recorded count, with zero failed requests and live tasks untouched. A controller that reads "which color is live" from the listeners adopts the drift. |
 | `lifecycle.repair_without_disruption` | 2 | Preview listener and standby service are deleted; the worker is replaced retaining only Terraform state. A no-release deploy restores both from retained state and record, preview forwards to standby, no production request fails, no live task is replaced. |
-| `lifecycle.reapply_stable` | 1 | A standalone `terraform plan -refresh=false` resolves every variable and plans no create/delete. |
+| `lifecycle.reapply_stable` | 1 | Every successful deploy publishes `evidence/reapply.json`: its final `terraform plan -refresh=false` JSON with the SHA-256 of the exact local state file. The verifier parses that public Terraform evidence directly, rejects stale or unbound evidence, and confirms no create/delete without requiring a provider binary in its offline image. |
 
 ### Blue/green topology — 5
 

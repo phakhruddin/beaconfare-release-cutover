@@ -46,8 +46,12 @@ The deployment state you remember between runs (which color is live, which
 release each color runs, how many tasks each color should run) is kept in
 the cloud release record defined in `release-record.md`. Local files may
 cache it, but a run must be able to continue from the record alone, and a
-standalone `terraform plan -refresh=false` against `infra/` must agree with
-what the last run deployed.
+final `terraform plan -refresh=false` must agree with what the last run
+deployed. On every successful run, `deploy.sh` writes that plan's JSON to
+`evidence/reapply.json`, with
+`_beaconfare_reapply_evidence.state_sha256` set to the SHA-256 of the current
+`infra/terraform.tfstate`. The verifier checks this public evidence
+and the current state together; it must contain no create or delete action.
 
 ## Refusals
 

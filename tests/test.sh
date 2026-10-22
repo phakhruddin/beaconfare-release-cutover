@@ -4,13 +4,7 @@ set -Eeuo pipefail
 mkdir -p /logs/verifier
 
 has_valid_reward() {
-  [[ -s /logs/verifier/reward.json ]] \
-    && jq -e '
-      (.reward | type) == "number"
-      and (.score | type) == "number"
-      and .reward >= 0
-      and .reward <= 1
-    ' /logs/verifier/reward.json >/dev/null 2>&1
+  python -c 'import json,sys; x=json.load(open(sys.argv[1])); assert isinstance(x.get("reward"), (int,float)) and isinstance(x.get("score"), (int,float)) and 0 <= x["reward"] <= 1' /logs/verifier/reward.json >/dev/null 2>&1
 }
 
 # Harbor parses every top-level value in reward.json as a numeric reward
@@ -48,7 +42,7 @@ pytest_rc=$?
 set -e
 
 if has_valid_reward; then
-  jq -r '.reward' /logs/verifier/reward.json >/logs/verifier/reward.txt
+  python -c 'import json,sys; print(json.load(open(sys.argv[1]))["reward"])' /logs/verifier/reward.json >/logs/verifier/reward.txt
   exit 0
 fi
 

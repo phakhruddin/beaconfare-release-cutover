@@ -135,9 +135,12 @@ is live and which release each color runs, into auto-loaded variable files in
 cache: the release state itself lives in the cloud release record
 (`release-record.md`), and between runs the verifier may replace the
 submission directory with a fresh copy of what you handed over, keeping only
-`infra/terraform.tfstate`. Correctness is checked by running
-`terraform plan -refresh=false` directly against `infra/` without going
-through `deploy.sh`, after the last release.
+`infra/terraform.tfstate`. Every successful `deploy.sh` must also write
+`evidence/reapply.json`: the JSON emitted by its final
+`terraform plan -refresh=false`, annotated at
+`_beaconfare_reapply_evidence.state_sha256` with the SHA-256 of that exact
+state file. Correctness is checked from this public evidence against the
+current state after the last release; it must show no create or delete.
 
 ## What "done" looks like
 
@@ -212,8 +215,9 @@ through `deploy.sh`, after the last release.
     `previous_state_digest` defined in `release-record.md`. A mismatched digest
     is an undeployable record refused with `65`; a rollback advances and links
     the lineage exactly once, while an unchanged run preserves it.
-14. A standalone `terraform plan -refresh=false` against `infra/` shows
-   nothing to create or delete.
+14. `evidence/reapply.json`, written by the final standalone
+   `terraform plan -refresh=false` and bound to the current state file,
+   shows nothing to create or delete.
 15. `destroy.sh` removes everything this deployment owns and nothing else.
 
 ## Scoring

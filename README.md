@@ -99,7 +99,7 @@ Traps that carry the difficulty:
 | `environment/workspace/contracts/crash-recovery.md` | Named crash points, what a crashed run leaves behind, and takeover recovery. |
 | `environment/workspace/contracts/release-lock.md` | The exclusive release lock every `deploy.sh` run takes, respects (exit 75) and releases. |
 | `solution/` | Reference Terraform and release controller. One correct answer, not the required layout. |
-| `tests/` | Verifier image and the weighted obligation suite. `tests/application` and `tests/contracts` mirror `environment/`, because Realm uploads only `tests/` as the verifier context. Keep them in sync. |
+| `tests/` | Verifier image and the weighted obligation suite. Realm uploads only this directory as the verifier build context, so all verifier inputs (including its small offline Python-wheel set) live here. `tests/application` and `tests/contracts` mirror `environment/`; keep them in sync. |
 | `scripts/diagnose-floci-scaling.sh` | Author-only diagnostic: probes how the pinned Floci image scales ECS services from zero. Not part of the agent or verifier environment. |
 | `tests/suite/obligations.yaml` | Single source of truth for scoring. The verifier refuses to start if its weights do not reconcile to 100. |
 

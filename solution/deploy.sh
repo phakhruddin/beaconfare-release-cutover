@@ -810,4 +810,22 @@ jq -n \
               last_request: {version: $requested, outcome: $outcome}}
   }' > "$MANIFEST_PATH"
 
+# Public verifier evidence: this is exactly the no-refresh reapply plan the
+# contract requires. The digest binds the exported plan to the local state the
+# verifier later reads, so it cannot accidentally accept evidence left from a
+# prior deploy. Keeping this compact JSON with the submission lets the
+# lightweight verifier audit the same observable result without shipping a
+# Terraform provider copy.
+mkdir -p "${SCRIPT_DIR}/evidence"
+tf plan -refresh=false -input=false -no-color -out="$WORK/reapply.tfplan" \
+  || die "terraform reapply plan failed"
+terraform -chdir="$INFRA_DIR" show -json "$WORK/reapply.tfplan" > "$WORK/reapply.json" \
+  || die "could not write reapply evidence"
+STATE_SHA256=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+  "$INFRA_DIR/terraform.tfstate")
+jq --arg state_sha256 "$STATE_SHA256" \
+  '. + {_beaconfare_reapply_evidence: {format: "terraform-show-json-v1", command: "terraform plan -refresh=false", state_sha256: $state_sha256}}' \
+  "$WORK/reapply.json" > "${SCRIPT_DIR}/evidence/reapply.json" \
+  || die "could not bind reapply evidence to Terraform state"
+
 log "deploy complete: outcome=$OUTCOME live=$LIVE_COLOR/$LIVE_VERSION standby=$STANDBY_COLOR/${STANDBY_REPORTED:-idle}"

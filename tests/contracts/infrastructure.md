@@ -4,6 +4,11 @@ Declare every required cloud resource in Terraform and keep it in
 `infra/terraform.tfstate`. Each linked service contract defines the required
 settings and relationships for that resource.
 
+After every successful deployment, retain the public
+`evidence/reapply.json` described by `release-process.md`. It records the
+final no-refresh Terraform reapply plan and is bound to the state file that
+the verifier examines.
+
 ## Shared Rules
 
 - Configure the AWS provider and every AWS CLI call with `aws_endpoint_url` and
